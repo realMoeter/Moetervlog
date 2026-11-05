@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Moetervlog</title>
+  <meta name="description" content="Collect behavioural data per project and ID, export as CSV.">
+  <meta name="theme-color" content="#24453a">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- The top bar and the main area are filled by app.js -->
+  <header id="topbar"></header>
+  <main id="app"></main>
+
+  <!-- One reusable pop-up window for all dialogs -->
+  <dialog id="dlg"><form id="dlgForm" method="dialog"></form></dialog>
+
+  <!-- Short messages at the bottom ("Saved", "Exported" …) -->
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
