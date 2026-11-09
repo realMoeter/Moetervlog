@@ -256,16 +256,67 @@ function renderProjects() {
   if ($('#bkBtn')) $('#bkBtn').onclick = backupNow;
 }
 
-/* ----- 3b. ID list of one project ----- */
-let ui = { pid: null, selecting: false, selected: new Set(), search: '' };
+/* ----- 3b. One project: group view ("petri dishes") or ID list ----- */
+let ui = { pid: null, selecting: false, selected: new Set(), search: '', openGroup: null, keepSel: false };
 
-function renderProject(pid) {
+/* What the tiles can be grouped by. Value stored in project.groupBy */
+function groupByOptions() {
+  return [['group', 'Group'], ...db.traits.map(t => ['t:' + t, t]), ['origin', 'Origin'], ['mother', 'Mother'], ['status', 'Alive / dead']];
+}
+function groupKey(x, by) {
+  if (by === 'group') return x.m.group || '';
+  if (by.startsWith('t:')) return traitsOf(x.a)[by.slice(2)] || '';
+  if (by === 'origin') return x.a.origin || '';
+  if (by === 'mother') return codeOf(x.a.motherId);
+  if (by === 'status') return statusOf(x.a);
+  return '';
+}
+function groupTitle(by, key) {
+  if (!key) return by === 'group' ? 'No group' : 'not set';
+  return by === 'group' ? `Group ${key}` : key;
+}
+// a group key inside the URL: "" (no group) is written as "_none_"
+const keyToUrl = k => encodeURIComponent(k === '' ? '_none_' : k);
+const urlToKey = u => { const k = decodeURIComponent(u); return k === '_none_' ? '' : k; };
+
+/* Colour marks → dot colours (English + German colour words) */
+const COLOUR_WORDS = {
+  red: '#d33a2c', rot: '#d33a2c', blue: '#2f6fd6', blau: '#2f6fd6', green: '#2e9e4f', 'grün': '#2e9e4f', gruen: '#2e9e4f',
+  yellow: '#f2c230', gelb: '#f2c230', orange: '#f08a24', pink: '#ec6fae', rosa: '#ec6fae',
+  purple: '#8a4fc4', lila: '#8a4fc4', violet: '#8a4fc4', violett: '#8a4fc4',
+  white: '#ffffff', 'weiß': '#ffffff', weiss: '#ffffff', black: '#1d1d1d', schwarz: '#1d1d1d',
+  brown: '#8a5a32', braun: '#8a5a32', grey: '#9a9a9a', gray: '#9a9a9a', grau: '#9a9a9a',
+  silver: '#c8ccd0', silber: '#c8ccd0', gold: '#d4a62a', turquoise: '#2bb3b1', 'türkis': '#2bb3b1', tuerkis: '#2bb3b1',
+};
+const colourTrait = () => db.traits.find(t => /colou?r|farb/i.test(t));
+function markColours(v) {
+  return String(v || '').toLowerCase().split(/[^a-zäöüß]+/).map(w => COLOUR_WORDS[w]).filter(Boolean).slice(0, 4);
+}
+function dotStyle(cols) {
+  if (!cols.length) return '';
+  if (cols.length === 1) return `background:${cols[0]}`;
+  const s = 100 / cols.length;
+  return `background:conic-gradient(${cols.map((c, i) => `${c} ${i * s}% ${(i + 1) * s}%`).join(',')})`;
+}
+
+function renderProject(pid, group = null) {
   const p = project(pid);
   if (!p) return go('#/');
-  if (ui.pid !== pid) ui = { pid, selecting: false, selected: new Set(), search: '' };
+  ensureFilter(p);
+  p.view = p.view || 'groups';
+  p.groupBy = groupByOptions().some(o => o[0] === p.groupBy) ? p.groupBy : 'group';
+  if (ui.pid !== pid) ui = { pid, selecting: false, selected: new Set(), search: '', openGroup: null, keepSel: false };
+  if (ui.openGroup !== group) {
+    if (!ui.keepSel) { ui.selecting = false; ui.selected.clear(); }
+    ui.openGroup = group;
+  }
+  ui.keepSel = false;
+  const inGroup = group !== null;
 
   setTop({
-    back: '#/', title: p.name, actions: [
+    back: inGroup ? `#/p/${pid}` : '#/',
+    title: inGroup ? `${groupTitle(p.groupBy, group)} · ${p.name}` : p.name,
+    actions: [
       { icon: I.share, label: 'Export CSV', fn: () => exportDialog(pid) },
       { icon: I.more, label: 'Project menu', fn: () => projectMenu(pid) },
     ],
@@ -276,64 +327,140 @@ function renderProject(pid) {
         <input type="search" id="search" placeholder="Search ID or colour mark…" value="${esc(ui.search)}" autocomplete="off">
         <button class="btn" id="filterBtn">${I.filter}<span>Filter</span><span class="badge" id="fbadge"></span></button>
       </div>
+      ${inGroup ? '' : `
+      <div class="viewbar">
+        <div class="seg">
+          <button type="button" data-v="groups" aria-pressed="${p.view === 'groups'}">Groups</button>
+          <button type="button" data-v="list" aria-pressed="${p.view === 'list'}">List</button>
+        </div>
+        ${p.view === 'groups' ? `<label class="by">by <select id="groupBy">${groupByOptions().map(([v, l]) =>
+          `<option value="${esc(v)}" ${v === p.groupBy ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
+      </div>`}
       <div class="chips" id="chips"></div>
       <p class="summary" id="summary"></p>
-      <ul class="idlist" id="list"></ul>
-      <div id="emptyList"></div>
+      <div id="body"></div>
     </section>
     <div class="selbar" id="selbar"></div>
     <button class="fab" id="fab">${I.plus}<span>New ID</span></button>`;
 
   $('#search').oninput = e => { ui.search = e.target.value; renderList(pid); };
   $('#filterBtn').onclick = () => filterDialog(pid);
-  $('#fab').onclick = () => newIdDialog(pid);
+  $('#fab').onclick = () => {
+    const by = p.groupBy, preset = {};
+    if (inGroup && by === 'group') preset.group = group;
+    if (inGroup && by.startsWith('t:')) preset.traits = { [by.slice(2)]: group };
+    newIdDialog(pid, preset);
+  };
+  app().querySelectorAll('[data-v]').forEach(b => b.onclick = () => { p.view = b.dataset.v; save(); renderProject(pid, group); });
+  if ($('#groupBy')) $('#groupBy').onchange = e => { p.groupBy = e.target.value; save(); renderList(pid); };
   renderList(pid);
 }
 
-/** IDs of a project after search + filters. Each item: { m: membership, a: animal, ev: events (newest first) } */
+/** IDs of a project after search + filters (+ opened group). Each item: { m: membership, a: animal, ev: events (newest first) } */
 function visibleMembers(pid, { ignoreFilters = false } = {}) {
   const p = project(pid);
-  const filters = ignoreFilters ? [] : (p.filters || []);
+  ensureFilter(p);
   const q = ignoreFilters ? '' : ui.search.trim().toLowerCase();
+  const og = (!ignoreFilters && ui.pid === pid) ? ui.openGroup : null;
   const idx = eventIndex(pid);
   return membersOf(pid)
     .map(m => ({ m, a: animal(m.animalId), ev: idx[m.animalId] || [] }))
     .filter(x => x.a)
     .filter(x => !q || x.a.code.toLowerCase().includes(q) || traitSummary(x.a).toLowerCase().includes(q))
-    .filter(x => filters.every(f => matchFilter(x, f)))
+    .filter(x => ignoreFilters || matchFilter(x, p.filter))
+    .filter(x => og === null || groupKey(x, p.groupBy) === og)
     .sort((x, y) => x.a.code.localeCompare(y.a.code, undefined, { numeric: true }));
 }
 
+/** Redraws filter chips, summary and the body (tiles or list). */
 function renderList(pid) {
   const p = project(pid);
-  const all = membersOf(pid);
+  if (!$('#body')) return;
   const rows = visibleMembers(pid);
+  const total = membersOf(pid).length;
   const alive = rows.filter(x => statusOf(x.a) === 'alive').length;
-  const filters = p.filters || [];
+  const fchips = filterChips(p);
+  const showGroups = p.view === 'groups' && ui.openGroup === null;
 
-  $('#fbadge').textContent = filters.length || '';
-  $('#chips').innerHTML = filters.map((f, i) => `<button class="chip" data-rm="${i}">${esc(filterLabel(f))} <b>×</b></button>`).join('');
-  $('#chips').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
-    p.filters.splice(+b.dataset.rm, 1); save(); renderList(pid);
+  $('#fbadge').textContent = fchips.length || '';
+  $('#chips').innerHTML = fchips.map((c, i) => `<button class="chip" data-rm="${i}">${esc(c.label)} <b>×</b></button>`).join('');
+  $('#chips').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { fchips[+b.dataset.rm].clear(); save(); renderList(pid); });
+
+  if (!total) {
+    $('#summary').textContent = '';
+    $('#body').innerHTML = `<div class="empty"><p><b>No IDs in this project yet.</b></p><p class="muted">Tap “New ID”.</p></div>`;
+    document.body.classList.remove('selecting');
+    return;
+  }
+  if (showGroups) renderGroups(pid, rows);
+  else renderRows(pid, rows);
+  const nGroups = showGroups ? new Set(rows.map(x => groupKey(x, p.groupBy))).size : 0;
+  const what = ui.openGroup !== null || rows.length === total ? `${rows.length} IDs` : `Showing ${rows.length} of ${total} IDs`;
+  $('#summary').textContent = `${what} · ${alive} alive${showGroups ? ` · ${nGroups} ${nGroups === 1 ? 'tile' : 'tiles'}` : ''}`;
+}
+
+/* Tiles: one per group, one dot per ID */
+function renderGroups(pid, rows) {
+  const p = project(pid), by = p.groupBy;
+  document.body.classList.remove('selecting');
+  const ct = colourTrait();
+  if (p.dots === 'colour' && !ct) p.dots = 'status';
+  const colourMode = p.dots === 'colour';
+
+  const buckets = new Map();
+  rows.forEach(x => { const k = groupKey(x, by); if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(x); });
+  const keys = [...buckets.keys()].sort((a, b) => (a === '') - (b === '') || a.localeCompare(b, undefined, { numeric: true }));
+
+  $('#body').innerHTML = `
+    <div class="legend">
+      ${colourMode ? '<span>dots = colour mark</span><span><i class="dot c dead" style="background:#ccc"></i> dead</span>'
+        : '<span><i class="dot alive"></i> alive</span><span><i class="dot dead"></i> dead</span>'}
+      ${ct ? `<button type="button" class="btn sm ghost" id="dotMode">${colourMode ? 'Show alive / dead' : 'Show colour marks'}</button>` : ''}
+    </div>
+    ${keys.length ? `<div class="dishes">${keys.map(k => {
+      const xs = buckets.get(k);
+      const al = xs.filter(x => statusOf(x.a) === 'alive').length;
+      const dots = xs.slice().sort((x, y) => (statusOf(x.a) === 'dead') - (statusOf(y.a) === 'dead')).map(x => {
+        const st = statusOf(x.a);
+        const cols = colourMode ? markColours(traitsOf(x.a)[ct]) : [];
+        const cls = colourMode ? `dot c ${st} ${cols.length ? '' : 'nocol'}` : `dot ${st}`;
+        return `<i class="${cls}" style="${dotStyle(cols)}" title="${esc(x.a.code)}"></i>`;
+      }).join('');
+      return `<button type="button" class="dish ${al ? '' : 'alldead'}" data-k="${esc(k)}">
+        <span class="dish-head"><span class="dish-title">${esc(groupTitle(by, k))}</span>
+        <span class="dish-count"><b>${al}</b>/${xs.length} alive</span></span>
+        <span class="dots">${dots}</span></button>`;
+    }).join('')}</div>` : `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>`}
+    <p class="hint" style="margin-top:12px">Tap a tile to open its list · hold a tile to select all its living IDs.</p>`;
+
+  if ($('#dotMode')) $('#dotMode').onclick = () => { p.dots = colourMode ? 'status' : 'colour'; save(); renderList(pid); };
+  $('#body').querySelectorAll('.dish').forEach(el => {
+    const k = el.dataset.k;
+    onPress(el,
+      () => go(`#/p/${pid}/g/${keyToUrl(k)}`),
+      () => {
+        const ids = buckets.get(k).filter(x => statusOf(x.a) === 'alive').map(x => x.a.id);
+        ui.selecting = ids.length > 0; ui.selected = new Set(ids); ui.keepSel = true;
+        go(`#/p/${pid}/g/${keyToUrl(k)}`);
+        toast(`${ids.length} living ID${ids.length === 1 ? '' : 's'} selected`);
+      });
   });
-  $('#summary').textContent = all.length
-    ? `${rows.length === all.length ? `${all.length} IDs` : `Showing ${rows.length} of ${all.length} IDs`} · ${alive} alive`
-    : '';
-  $('#emptyList').innerHTML = !all.length
-    ? `<div class="empty"><p><b>No IDs in this project yet.</b></p><p class="muted">Tap “New ID”. Tip: hold an ID to select several at once.</p></div>`
-    : (!rows.length ? `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>` : '');
+}
 
-  const list = $('#list');
-  list.innerHTML = rows.map(({ m, a, ev }) => {
-    const last = ev.find(e => e.kind !== 'trait');   // latest real status (property changes are shown separately)
-    const sub = [traitSummary(a), m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
-    return `<li class="idrow ${ui.selected.has(a.id) ? 'sel' : ''} ${statusOf(a)}" data-id="${a.id}">
-      <span class="check">${I.check}</span>
-      <span class="idmain"><span class="idcode">${esc(a.code)}</span><span class="idsub">${esc(sub)}</span></span>
-      <span class="pill ${statusOf(a)}">${statusOf(a)}</span></li>`;
-  }).join('');
+/* Plain list of IDs (with multi-select) */
+function renderRows(pid, rows) {
+  $('#body').innerHTML = rows.length
+    ? `<ul class="idlist" id="list">${rows.map(({ m, a, ev }) => {
+      const last = ev.find(e => e.kind !== 'trait');   // latest real status (property changes are shown separately)
+      const sub = [traitSummary(a), m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
+      return `<li class="idrow ${ui.selected.has(a.id) ? 'sel' : ''} ${statusOf(a)}" data-id="${a.id}">
+        <span class="check">${I.check}</span>
+        <span class="idmain"><span class="idcode">${esc(a.code)}</span><span class="idsub">${esc(sub)}</span></span>
+        <span class="pill ${statusOf(a)}">${statusOf(a)}</span></li>`;
+    }).join('')}</ul><p class="hint" style="margin-top:12px">Tip: hold an ID to select several.</p>`
+    : `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>`;
 
-  list.querySelectorAll('.idrow').forEach(li => {
+  $('#body').querySelectorAll('.idrow').forEach(li => {
     const id = li.dataset.id;
     onPress(li,
       () => { if (ui.selecting) toggleSel(pid, id); else go(`#/p/${pid}/a/${id}`); },
@@ -429,7 +556,7 @@ function newProjectDialog() {
     onOk: fd => {
       const name = fd.get('name').trim();
       const now = new Date().toISOString();
-      const p = { id: uid(), name, features: DEFAULT_FEATURES.slice(), filters: [], createdAt: now, updatedAt: now };
+      const p = { id: uid(), name, features: DEFAULT_FEATURES.slice(), filter: emptyFilter(), view: 'groups', groupBy: 'group', createdAt: now, updatedAt: now };
       db.projects.push(p); save(); go(`#/p/${p.id}`);
     },
   });
@@ -542,7 +669,7 @@ function autoCodes(n = 1, exclude = []) {
   return out;
 }
 
-function newIdDialog(pid) {
+function newIdDialog(pid, preset = {}) {
   let auto = autoCodes(1)[0];   // pre-filled suggestion
   modal({
     title: 'New ID', okText: 'Create',
@@ -556,7 +683,7 @@ function newIdDialog(pid) {
         <label>How many?<input name="count" type="number" min="1" max="500" value="1" inputmode="numeric"></label>
       </div>
       <p class="hint" id="codeHint"></p>
-      ${idFields(pid, { collectedOn: '', assembledOn: '' })}`,
+      ${idFields(pid, Object.assign({ collectedOn: '', assembledOn: '' }, preset))}`,
     onOpen: f => {
       const isAuto = () => { const c = f.code.value.trim(); return !c || c === auto; };
       const hint = () => {
@@ -730,7 +857,7 @@ function traitsDialog() {
         confirmBox(`Remove “${t}”?`, `The current “${esc(t)}” values of all IDs are removed. Entries already in the history stay.`, 'Remove', () => {
           db.traits = db.traits.filter(x => x !== t);
           db.animals.forEach(a => { if (a.traits) delete a.traits[t]; });
-          db.projects.forEach(p => p.filters = (p.filters || []).filter(x => !(x.type === 'trait' && x.feature === t)));
+          db.projects.forEach(p => { ensureFilter(p); delete p.filter.traits[t]; if (p.groupBy === 't:' + t) p.groupBy = 'group'; });
           save(); render(); traitsDialog();
         });
       });
@@ -744,7 +871,11 @@ function traitsDialog() {
             db.traits[db.traits.indexOf(old)] = n;
             db.animals.forEach(a => { if (a.traits && old in a.traits) { a.traits[n] = a.traits[old]; delete a.traits[old]; } });
             db.events.forEach(e => { if (e.kind === 'trait' && e.feature === old) e.feature = n; });
-            db.projects.forEach(p => (p.filters || []).forEach(x => { if (x.type === 'trait' && x.feature === old) x.feature = n; }));
+            db.projects.forEach(p => {
+              ensureFilter(p);
+              if (p.filter.traits[old]) { p.filter.traits[n] = p.filter.traits[old]; delete p.filter.traits[old]; }
+              if (p.groupBy === 't:' + old) p.groupBy = 't:' + n;
+            });
             save(); render(); setTimeout(traitsDialog);
           },
         });
@@ -831,85 +962,106 @@ function editEventDialog(pid, evId) {
   });
 }
 
-/* ----- Filters ----- */
-const FILTER_TYPES = {
-  group: 'Group is', status: 'Alive / dead', has: 'Has status', hasnot: 'Does NOT have status',
-  last: 'Latest value of status is', trait: 'Property is', mother: 'Mother is', father: 'Father is', origin: 'Origin contains',
-};
-function filterLabel(f) {
-  switch (f.type) {
-    case 'group': return `Group = ${f.value}`;
-    case 'status': return f.value;
-    case 'has': return `has ${f.feature}`;
-    case 'hasnot': return `no ${f.feature}`;
-    case 'last': return `${f.feature} = ${f.value}`;
-    case 'trait': return f.value ? `${f.feature}: ${f.value}` : `no ${f.feature}`;
-    case 'mother': return `mother ${f.value}`;
-    case 'father': return `father ${f.value}`;
-    case 'origin': return `origin ∋ ${f.value}`;
-  }
-  return '?';
+/* ----- Filters -----
+   project.filter = { status:[], group:[], origin:[], mother:[], traits:{name:[values]}, has:[], missing:[] }
+   Inside one row: ANY of the chosen values (OR). Between rows: ALL must match (AND).
+   "" stands for "not set". */
+const emptyFilter = () => ({ status: [], group: [], origin: [], mother: [], traits: {}, has: [], missing: [] });
+
+/** Makes sure a project has the new filter format (converts filters of older versions). */
+function ensureFilter(p) {
+  if (p.filter) return;
+  const f = emptyFilter();
+  (p.filters || []).forEach(o => {
+    if (o.type === 'status') f.status.push(o.value);
+    if (o.type === 'group') f.group.push(o.value);
+    if (o.type === 'origin') f.origin.push(o.value);
+    if (o.type === 'mother') f.mother.push(o.value);
+    if (o.type === 'trait') (f.traits[o.feature] = f.traits[o.feature] || []).push(o.value);
+    if (o.type === 'has') f.has.push(o.feature);
+    if (o.type === 'hasnot') f.missing.push(o.feature);
+  });
+  p.filter = f;
+  delete p.filters;
 }
+
+const inList = (list, v) => !list || !list.length || list.some(x => same(x, v));
+const hasStatus = (ev, f) => ev.some(e => e.kind !== 'trait' && same(e.feature, f));
 function matchFilter({ a, m, ev }, f) {
-  switch (f.type) {
-    case 'group': return same(m.group, f.value);
-    case 'status': return statusOf(a) === f.value;
-    case 'has': return ev.some(e => same(e.feature, f.feature));
-    case 'hasnot': return !ev.some(e => same(e.feature, f.feature));
-    case 'last': { const e = ev.find(x => same(x.feature, f.feature)); return !!e && same(e.value, f.value); }
-    case 'trait': return same(traitsOf(a)[f.feature], f.value);
-    case 'mother': return same(codeOf(a.motherId), f.value);
-    case 'father': return same(codeOf(a.fatherId), f.value);
-    case 'origin': return String(a.origin || '').toLowerCase().includes(String(f.value).toLowerCase());
-  }
-  return true;
+  return inList(f.status, statusOf(a)) && inList(f.group, m.group || '') && inList(f.origin, a.origin || '')
+    && inList(f.mother, codeOf(a.motherId))
+    && Object.entries(f.traits).every(([t, vals]) => inList(vals, traitsOf(a)[t] || ''))
+    && f.has.every(h => hasStatus(ev, h)) && f.missing.every(h => !hasStatus(ev, h));
+}
+
+/** Active filters as removable chips: [{ label, clear() }] */
+function filterChips(p) {
+  const f = p.filter, out = [];
+  const show = v => v === '' ? 'not set' : v;
+  const add = (label, list, clear) => { if (list.length) out.push({ label: `${label}: ${list.map(show).join(', ')}`, clear }); };
+  if (f.status.length) out.push({ label: f.status.join(' / '), clear: () => f.status = [] });
+  add('Group', f.group, () => f.group = []);
+  Object.entries(f.traits).forEach(([t, vals]) => add(t, vals, () => delete f.traits[t]));
+  add('Origin', f.origin, () => f.origin = []);
+  add('Mother', f.mother, () => f.mother = []);
+  f.has.forEach(h => out.push({ label: `has ${h}`, clear: () => f.has = f.has.filter(x => x !== h) }));
+  f.missing.forEach(h => out.push({ label: `no ${h}`, clear: () => f.missing = f.missing.filter(x => x !== h) }));
+  return out;
 }
 
 function filterDialog(pid) {
   const p = project(pid);
-  p.filters = p.filters || [];
+  ensureFilter(p);
+  const draft = JSON.parse(JSON.stringify(p.filter));
+  const idx = eventIndex(pid);
+  const all = membersOf(pid).map(m => ({ m, a: animal(m.animalId), ev: idx[m.animalId] || [] })).filter(x => x.a);
+
+  // one section per thing you can filter by; options = values that actually occur
+  const valuesOf = fn => {
+    const vals = sortNat(uniq(all.map(fn)));
+    const empty = all.some(x => !String(fn(x) || '').trim());
+    return [...vals.map(v => [v, v]), ...(vals.length && empty ? [['', '— not set']] : [])];
+  };
+  const feats = sortNat(uniq(all.flatMap(x => x.ev.filter(e => e.kind !== 'trait').map(e => e.feature)))).filter(f => !isDeathFeature(f));
+  const sections = [
+    { title: 'Alive / dead', path: ['status'], opts: [['alive', 'alive'], ['dead', 'dead']] },
+    { title: 'Group', path: ['group'], opts: valuesOf(x => x.m.group) },
+    ...db.traits.map(t => ({ title: t, path: ['traits', t], opts: valuesOf(x => traitsOf(x.a)[t]) })),
+    { title: 'Origin', path: ['origin'], opts: valuesOf(x => x.a.origin) },
+    { title: 'Mother', path: ['mother'], opts: valuesOf(x => codeOf(x.a.motherId)) },
+    { title: 'Has status', path: ['has'], opts: feats.map(f => [f, f]) },
+    { title: 'Missing status', path: ['missing'], opts: feats.map(f => [f, 'no ' + f]) },
+  ].filter(s => s.opts.length && s.opts.length <= 60);
+
+  const listOf = path => path[0] === 'traits' ? (draft.traits[path[1]] = draft.traits[path[1]] || []) : draft[path[0]];
+  const isOn = (s, v) => listOf(s.path).some(x => same(x, v));
+
   modal({
-    title: 'Filters', okText: 'Apply',
+    title: 'Filter', okText: 'Show',
     body: `
-      <p class="muted" style="margin:0">All filters must match (AND). Filters are remembered per project.</p>
-      <div>${p.filters.map((f, i) => `<div class="frow"><span>${esc(filterLabel(f))}</span><button type="button" class="btn sm ghost" data-rm="${i}">Remove</button></div>`).join('') || '<p class="muted">No filters active.</p>'}</div>
-      <fieldset>
-        <legend>Add a filter</legend>
-        <label>Type<select name="type">${Object.entries(FILTER_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-        <label data-show="has hasnot last">Status<input name="feature" list="dl-features" autocomplete="off"></label>
-        <label data-show="trait">Property<select name="trait">${db.traits.map(t => `<option>${esc(t)}</option>`).join('')}</select></label>
-        <label data-show="group last trait mother father origin">Value<input name="value" list="dl-fv" autocomplete="off"></label>
-        <p class="hint" data-show="trait">Leave the value empty to find IDs where it is not set yet.</p>
-        <label data-show="status">Show<select name="st"><option value="alive">alive</option><option value="dead">dead</option></select></label>
-      </fieldset>
-      ${p.filters.length ? '<button type="button" class="btn ghost" id="clearF">Clear all filters</button>' : ''}
-      ${datalist('dl-features', uniq([...p.features, ...db.events.filter(e => e.projectId === pid).map(e => e.feature)]))}<datalist id="dl-fv"></datalist>`,
+      <p class="hint" style="margin:0">Tap to choose. Several in one row = any of them · different rows = all must match.</p>
+      ${sections.map((s, si) => `<div class="fsec"><div class="fsec-t">${esc(s.title)}</div><div class="chips">${s.opts.map(([v, l], oi) =>
+        `<button type="button" class="chip toggle" data-s="${si}" data-o="${oi}" aria-pressed="${isOn(s, v)}">${esc(l)}</button>`).join('')}</div></div>`).join('')}
+      <button type="button" class="btn ghost" id="clearF">Clear all filters</button>`,
     onOpen: f => {
-      const sync = () => {
-        const t = f.type.value;
-        f.querySelectorAll('[data-show]').forEach(l => l.hidden = !l.dataset.show.split(' ').includes(t));
-        const vals = t === 'group' ? groupsOf(pid)
-          : (t === 'mother' || t === 'father') ? allCodes()
-          : t === 'origin' ? origins()
-          : t === 'last' ? valuesFor(pid, f.feature.value)
-          : t === 'trait' ? traitValues(f.trait.value) : [];
-        f.querySelector('#dl-fv').innerHTML = vals.map(v => `<option value="${esc(v)}">`).join('');
+      const ok = f.querySelector('button[type=submit]');
+      const update = () => {
+        f.querySelectorAll('.chip.toggle').forEach(b => { const s = sections[b.dataset.s]; b.setAttribute('aria-pressed', isOn(s, s.opts[b.dataset.o][0])); });
+        const n = all.filter(x => matchFilter(x, draft)).length;
+        ok.textContent = `Show ${n} ID${n === 1 ? '' : 's'}`;
       };
-      f.type.onchange = sync; f.feature.oninput = sync; f.trait.onchange = sync; sync();
-      f.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { p.filters.splice(+b.dataset.rm, 1); save(); renderList(pid); filterDialog(pid); });
-      const c = f.querySelector('#clearF');
-      if (c) c.onclick = () => { p.filters = []; save(); renderList(pid); closeModal(); };
+      f.querySelectorAll('.chip.toggle').forEach(b => b.onclick = () => {
+        const s = sections[b.dataset.s], v = s.opts[b.dataset.o][0], list = listOf(s.path);
+        const i = list.findIndex(x => same(x, v));
+        i >= 0 ? list.splice(i, 1) : list.push(v);
+        update();
+      });
+      f.querySelector('#clearF').onclick = () => { Object.assign(draft, emptyFilter()); update(); };
+      update();
     },
-    onOk: fd => {
-      const t = fd.get('type'), feature = fd.get('feature').trim(), value = fd.get('value').trim();
-      let nf = null;
-      if (t === 'status') nf = { type: t, value: fd.get('st') };
-      else if (['has', 'hasnot'].includes(t) && feature) nf = { type: t, feature };
-      else if (t === 'last' && feature && value) nf = { type: t, feature, value };
-      else if (t === 'trait' && fd.get('trait')) nf = { type: t, feature: fd.get('trait'), value };
-      else if (['group', 'mother', 'father', 'origin'].includes(t) && value) nf = { type: t, value };
-      if (nf) { p.filters.push(nf); save(); }
-      renderList(pid);
+    onOk: () => {
+      Object.keys(draft.traits).forEach(t => { if (!draft.traits[t].length) delete draft.traits[t]; });
+      p.filter = draft; save(); renderList(pid);
     },
   });
 }
@@ -1060,6 +1212,7 @@ function render() {
   if (h !== lastHash) { window.scrollTo(0, 0); lastHash = h; }
   const [, p, pid, a, aid] = h.slice(1).split('/');   // "#/p/<pid>/a/<aid>"
   if (p === 'p' && pid && a === 'a' && aid) renderAnimal(pid, aid);
+  else if (p === 'p' && pid && a === 'g' && aid !== undefined) renderProject(pid, urlToKey(aid));
   else if (p === 'p' && pid) renderProject(pid);
   else renderProjects();
 }

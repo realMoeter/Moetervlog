@@ -218,3 +218,48 @@ legend { font-weight: 650; padding: 0 6px; }
 .id-input .btn { padding: 0 12px; flex: none; }
 
 [hidden] { display: none !important; }
+
+/* ============ View switch + group tiles ("petri dishes") ============ */
+.viewbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.seg { display: inline-flex; background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+.seg button { font: inherit; font-weight: 600; font-size: .92rem; border: 0; background: transparent; color: var(--muted); padding: 7px 16px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.by { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.by select { min-height: 38px; padding: 6px 10px; width: auto; max-width: 52vw; }
+
+.legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: .85rem; margin: 0 2px 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .btn { margin-left: auto; }
+
+.dishes { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.dish {
+  font: inherit; color: var(--ink); text-align: left; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line); border-radius: 22px;
+  padding: 12px 14px 14px; display: grid; gap: 10px; align-content: start;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.dish:active { transform: scale(.985); }
+.dish.alldead { opacity: .6; }
+.dish-head { display: grid; gap: 1px; }
+.dish-title { font-weight: 700; font-size: 1.02rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dish-count { font-size: .85rem; color: var(--muted); }
+.dish-count b { color: var(--alive); font-size: 1rem; }
+.dots { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: none; box-sizing: border-box; }
+.dot.alive { background: var(--alive); }
+.dot.dead { background: transparent; border: 2px solid var(--dead); opacity: .7; }
+.dot.c { border: 1px solid color-mix(in srgb, var(--ink) 35%, transparent); opacity: 1; }
+.dot.c.nocol { background: repeating-linear-gradient(45deg, var(--line) 0 3px, transparent 3px 6px); border-style: dashed; }
+.dot.c.dead { position: relative; opacity: .55; }
+.dot.c.dead::after {   /* red cross over dead animals in colour mode */
+  content: ""; position: absolute; inset: -3px;
+  background: linear-gradient(45deg, transparent 43%, var(--dead) 43% 57%, transparent 57%),
+              linear-gradient(-45deg, transparent 43%, var(--dead) 43% 57%, transparent 57%);
+}
+
+/* ============ Filter dialog ============ */
+.fsec-t { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 650; }
+.fsec .chips { margin-top: 6px; }
+.chip.toggle { border: 1px solid var(--line); background: var(--bg); }
+.chip.toggle[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

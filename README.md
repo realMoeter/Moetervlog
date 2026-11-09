@@ -56,7 +56,14 @@ Done – the app now opens from the home screen, also in the lab without Wi-Fi.
 ## 4. How the app works
 
 - **Start screen** = your experiments (projects). ⋮ top right = settings & backup.
-- **Project** = list of IDs. Search field, **Filter** button (several filters at once, they are remembered), export button (↑).
+- **Project** opens in the **group view**: one tile per group (like the petri dishes on the shelf), one dot per ID –
+  filled green = alive, red ring = dead, plus "4/5 alive". *by …* groups the tiles by group, a property (colour mark, sex …),
+  origin, mother or alive/dead. **Show colour marks** colours the dots by the colour mark (e.g. "red-blue" → two-coloured dot,
+  English or German colour words; dead = red cross).
+  Tap a tile → list of that group. **Hold a tile** → all its living IDs are selected (e.g. "whole dish fed").
+  **List** shows all IDs as before.
+- **Filter**: tap the values you want. Several in one row = any of them, different rows = all must match.
+  The button shows how many IDs will be left. Active filters appear as chips; tap a chip to remove it.
 - **New ID**: ID, group, origin, mother, father, collecting date, assembling date.
   "How many?" > 1 creates a series: `F` + 12 → `F01 … F12`.
 - **Every ID starts alive.** Adding the status `death` marks it dead on that date.
