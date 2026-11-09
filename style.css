@@ -210,3 +210,9 @@ legend { font-weight: 650; padding: 0 6px; }
   opacity: 0; pointer-events: none; transition: .2s; z-index: 100; max-width: calc(100vw - 32px);
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* keep form fields inside narrow dialogs */
+.dlg-body > *, .row2 > *, label { min-width: 0; }
+.id-input { display: flex; gap: 6px; }
+.id-input input { font-family: ui-monospace, monospace; letter-spacing: .08em; }
+.id-input .btn { padding: 0 12px; flex: none; }

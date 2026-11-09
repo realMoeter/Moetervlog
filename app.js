@@ -462,21 +462,54 @@ function idFields(pid, d = {}) {
     ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}${datalist('dl-codes', allCodes())}`;
 }
 
+/* ----- Automatic IDs -----
+   4 characters from digits + capital letters, WITHOUT look-alikes
+   (0/O, 1/I/L, 5/S, 2/Z, 8/B are left out → easy to read on a vial).
+   25 characters → 25^4 = 390 625 possible IDs.
+   Never repeats: checked against ALL IDs in ALL projects (incl. parents). */
+const AUTO_CHARS = '34679ACDEFGHJKMNPQRTUVWXY';
+const AUTO_LEN = 4;
+
+function randomCode() {
+  const r = new Uint32Array(AUTO_LEN);
+  crypto.getRandomValues(r);
+  return Array.from(r, x => AUTO_CHARS[x % AUTO_CHARS.length]).join('');
+}
+/** n new, unique automatic IDs */
+function autoCodes(n = 1, exclude = []) {
+  const taken = new Set([...db.animals.map(a => a.code.trim().toUpperCase()), ...exclude]);
+  const out = [];
+  let tries = 0;
+  while (out.length < n && tries++ < n * 1000) {
+    const c = randomCode();
+    if (!taken.has(c)) { taken.add(c); out.push(c); }
+  }
+  return out;
+}
+
 function newIdDialog(pid) {
+  let auto = autoCodes(1)[0];   // pre-filled suggestion
   modal({
     title: 'New ID', okText: 'Create',
     body: `
       <div class="row2">
-        <label>ID <span class="req">*</span><input name="code" required autocomplete="off" placeholder="e.g. F12"></label>
+        <label><span>ID <span class="req">*</span></span>
+          <span class="id-input">
+            <input name="code" required autocomplete="off" value="${auto}">
+            <button type="button" class="btn" id="reroll" title="New automatic ID" aria-label="New automatic ID">↻</button>
+          </span></label>
         <label>How many?<input name="count" type="number" min="1" max="500" value="1" inputmode="numeric"></label>
       </div>
       <p class="hint" id="codeHint"></p>
       ${idFields(pid, { collectedOn: '', assembledOn: '' })}`,
     onOpen: f => {
+      const isAuto = () => { const c = f.code.value.trim(); return !c || c === auto; };
       const hint = () => {
         const code = f.code.value.trim(), n = +f.count.value || 1;
         let t = '';
-        if (n > 1) t = `Creates ${n} IDs: ${seriesCodes(code || 'ID', n).slice(0, 3).join(', ')} …`;
+        if (n > 1 && isAuto()) t = `Creates ${n} new automatic IDs (4 characters, unique).`;
+        else if (isAuto()) t = 'Automatic ID – unique across all projects. Type your own ID to replace it.';
+        else if (n > 1) t = `Creates ${n} IDs: ${seriesCodes(code || 'ID', n).slice(0, 3).join(', ')} …`;
         else if (code) {
           const a = animalByCode(code);
           if (a && membership(pid, a.id)) t = '⚠ This ID is already in this project.';
@@ -485,12 +518,16 @@ function newIdDialog(pid) {
         f.querySelector('#codeHint').textContent = t;
       };
       f.code.oninput = hint; f.count.oninput = hint;
-      f.code.focus();
+      f.querySelector('#reroll').onclick = () => { auto = autoCodes(1)[0]; f.code.value = auto; hint(); };
+      hint();
     },
     onOk: fd => {
       const code = fd.get('code').trim();
       const n = Math.max(1, Math.min(500, +fd.get('count') || 1));
-      const codes = n > 1 ? seriesCodes(code, n) : [code];
+      const useAuto = !code || code === auto;
+      const codes = useAuto
+        ? (n > 1 ? [auto, ...autoCodes(n - 1, [auto])] : [auto])
+        : (n > 1 ? seriesCodes(code, n) : [code]);
       let created = 0, linked = 0, skipped = 0;
       codes.forEach(c => {
         let a = animalByCode(c);
