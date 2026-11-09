@@ -64,6 +64,11 @@ Done – the app now opens from the home screen, also in the lab without Wi-Fi.
   Then **+ Status** adds the same status to all of them, **Group** sets their group.
 - **ID page**: all details, links to parents and offspring, other projects of this ID, and the full status history.
   Tap an entry to edit or delete it.
+- **Properties** (colour mark, sex, …): lasting details that belong to the animal, the same in all its projects.
+  They appear on the ID page, in the ID list (and the search finds them), as filter "Property is", and as own columns in `…_ids.csv`.
+  Change them via *Edit details* or for many IDs at once: hold → select → **Set…**. Every change is written into the history
+  with its date (e.g. "colour mark: red-blue – changed from yellow"), so re-marking after a molt stays traceable.
+  Manage the list: project menu ⋮ → *Properties*, or a new one directly in *Edit details*.
 - **Status types**: project menu ⋮ → *Status types*. They appear as quick buttons. Any new type you type is added automatically.
 
 ### IDs in several projects
@@ -71,7 +76,7 @@ An ID is one real animal, shared by all projects. Use project menu ⋮ → *Add 
 
 | Shared by all projects | Separate per project |
 |---|---|
-| ID code, origin, mother, father, collecting date, death | group, assembling date, all status entries |
+| ID code, properties, origin, mother, father, collecting date, death | group, assembling date, all status entries |
 
 The CSV export of a project contains only that project's entries.
 

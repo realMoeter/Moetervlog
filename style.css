@@ -216,3 +216,5 @@ legend { font-weight: 650; padding: 0 6px; }
 .id-input { display: flex; gap: 6px; }
 .id-input input { font-family: ui-monospace, monospace; letter-spacing: .08em; }
 .id-input .btn { padding: 0 12px; flex: none; }
+
+[hidden] { display: none !important; }

@@ -12,8 +12,11 @@
 
    Data model (all saved as one JSON object in the browser's storage):
      projects : { id, name, features:[…], filters:[…], createdAt, updatedAt }
-     animals  : { id, code, origin, motherId, fatherId, collectedOn, deathOn }
+     animals  : { id, code, origin, motherId, fatherId, collectedOn, deathOn, traits:{name:value} }
                 → one entry per real individual, SHARED by all projects
+     traits   : [names]  → "properties" of an animal (colour mark, sex …), same list for all projects.
+                A property always shows its CURRENT value; every change is also logged
+                as an entry (kind:'trait') in the history of all projects of that ID.
      members  : { projectId, animalId, group, assembledOn }
                 → "this ID takes part in this project" (+ project-specific fields)
      events   : { id, projectId, animalId, feature, value, date, time, note }
@@ -26,12 +29,13 @@
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
+const DEFAULT_TRAITS = ['colour mark', 'sex'];
 
 let db = loadData();
 let settings = loadSettings();
 
 function emptyDb() {
-  return { version: 1, projects: [], animals: [], members: [], events: [] };
+  return { version: 1, projects: [], animals: [], members: [], events: [], traits: DEFAULT_TRAITS.slice() };
 }
 function loadData() {
   try {
@@ -67,6 +71,37 @@ function touch(pid) { const p = project(pid); if (p) p.updatedAt = new Date().to
 function addFeature(p, f) {
   f = String(f || '').trim();
   if (f && !p.features.some(x => same(x, f))) p.features.push(f);
+}
+
+/* ----- Properties (traits) ----- */
+const traitsOf = a => (a && a.traits) || {};
+const traitValues = name => sortNat(uniq(db.animals.map(a => traitsOf(a)[name])));
+const traitSummary = a => db.traits.map(t => traitsOf(a)[t]).filter(Boolean).join(' · ');
+
+function addTrait(name) {
+  name = String(name || '').trim();
+  const existing = db.traits.find(t => same(t, name));
+  if (existing) return existing;
+  if (name) db.traits.push(name);
+  return name;
+}
+
+/** Change a property. If the value really changes, a history entry is added
+    in every project this ID belongs to (so each project's CSV has the history). */
+function setTrait(aid, name, value, date = todayStr()) {
+  const a = animal(aid);
+  value = String(value || '').trim();
+  const old = traitsOf(a)[name] || '';
+  if (old === value) return false;
+  a.traits = Object.assign({}, a.traits, { [name]: value });
+  if (!value) delete a.traits[name];
+  const now = new Date().toISOString();
+  db.members.filter(m => m.animalId === aid).forEach(m => db.events.push({
+    id: uid(), kind: 'trait', projectId: m.projectId, animalId: aid, createdAt: now,
+    feature: name, value: value || '(removed)', date, time: nowTime(),
+    note: old ? `changed from ${old}` : 'set',
+  }));
+  return true;
 }
 
 /** All events of one project, grouped by animal (newest first). */
@@ -238,7 +273,7 @@ function renderProject(pid) {
   app().innerHTML = `
     <section class="wrap">
       <div class="toolbar">
-        <input type="search" id="search" placeholder="Search ID…" value="${esc(ui.search)}" autocomplete="off">
+        <input type="search" id="search" placeholder="Search ID or colour mark…" value="${esc(ui.search)}" autocomplete="off">
         <button class="btn" id="filterBtn">${I.filter}<span>Filter</span><span class="badge" id="fbadge"></span></button>
       </div>
       <div class="chips" id="chips"></div>
@@ -264,7 +299,7 @@ function visibleMembers(pid, { ignoreFilters = false } = {}) {
   return membersOf(pid)
     .map(m => ({ m, a: animal(m.animalId), ev: idx[m.animalId] || [] }))
     .filter(x => x.a)
-    .filter(x => !q || x.a.code.toLowerCase().includes(q))
+    .filter(x => !q || x.a.code.toLowerCase().includes(q) || traitSummary(x.a).toLowerCase().includes(q))
     .filter(x => filters.every(f => matchFilter(x, f)))
     .sort((x, y) => x.a.code.localeCompare(y.a.code, undefined, { numeric: true }));
 }
@@ -290,8 +325,8 @@ function renderList(pid) {
 
   const list = $('#list');
   list.innerHTML = rows.map(({ m, a, ev }) => {
-    const last = ev[0];
-    const sub = [m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
+    const last = ev.find(e => e.kind !== 'trait');   // latest real status (property changes are shown separately)
+    const sub = [traitSummary(a), m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
     return `<li class="idrow ${ui.selected.has(a.id) ? 'sel' : ''} ${statusOf(a)}" data-id="${a.id}">
       <span class="check">${I.check}</span>
       <span class="idmain"><span class="idcode">${esc(a.code)}</span><span class="idsub">${esc(sub)}</span></span>
@@ -311,7 +346,7 @@ function renderList(pid) {
   $('#selbar').innerHTML = `
     <span class="count">${ui.selected.size} selected</span>
     <button class="btn sm" data-a="all">${allSel ? 'None' : 'All'}</button>
-    <button class="btn sm" data-a="group">Group</button>
+    <button class="btn sm" data-a="set">Set…</button>
     <button class="btn sm primary" data-a="status">+ Status</button>
     <button class="btn sm ghost" data-a="x" aria-label="Stop selecting">✕</button>`;
   $('#selbar').querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
@@ -319,7 +354,14 @@ function renderList(pid) {
     if (a === 'x') { ui.selecting = false; ui.selected.clear(); renderList(pid); }
     if (a === 'all') { allSel ? ui.selected.clear() : rows.forEach(x => ui.selected.add(x.a.id)); renderList(pid); }
     if (a === 'status') { if (ui.selected.size) addStatusDialog(pid, [...ui.selected]); else toast('Select at least one ID'); }
-    if (a === 'group') { if (ui.selected.size) setGroupDialog(pid, [...ui.selected]); else toast('Select at least one ID'); }
+    if (a === 'set') {
+      if (!ui.selected.size) return toast('Select at least one ID');
+      const ids = [...ui.selected];
+      menu(`Set for ${ids.length} ID${ids.length > 1 ? 's' : ''}`, [
+        { label: 'Group', fn: () => setGroupDialog(pid, ids) },
+        ...db.traits.map(t => ({ label: t, sub: 'Property – shared by all projects', fn: () => setTraitDialog(pid, ids, t) })),
+      ]);
+    }
   });
 }
 
@@ -348,6 +390,7 @@ function renderAnimal(pid, aid) {
       <div class="hero"><span class="pill ${st}">${st}${a.deathOn ? ' since ' + esc(a.deathOn) : ''}</span>${m && m.group ? `<span class="tag">Group ${esc(m.group)}</span>` : ''}</div>
       <dl class="facts">
         <dt>Group</dt><dd>${esc(m && m.group || '–')}</dd>
+        ${db.traits.map(t => `<dt>${esc(t)}</dt><dd>${esc(traitsOf(a)[t] || '–')}</dd>`).join('')}
         <dt>Origin</dt><dd>${esc(a.origin || '–')}</dd>
         <dt>Mother</dt><dd>${link(a.motherId)}</dd>
         <dt>Father</dt><dd>${link(a.fatherId)}</dd>
@@ -397,6 +440,7 @@ function projectMenu(pid) {
   menu(p.name, [
     { label: 'Add an existing ID', sub: 'An ID from another project – its shared data comes along', fn: () => addExistingDialog(pid) },
     { label: 'Status types', sub: 'Suggestions shown when adding a status', fn: () => featuresDialog(pid) },
+    { label: 'Properties', sub: 'Lasting details like colour mark or sex (all projects)', fn: traitsDialog },
     { label: 'Export CSV', sub: 'Share by mail, to Google Drive or download', fn: () => exportDialog(pid) },
     { label: 'Rename project', fn: () => modal({
       title: 'Rename project', body: `<label>Name<input name="name" required value="${esc(p.name)}"></label>`,
@@ -449,6 +493,7 @@ function resolveParent(code) {
 function idFields(pid, d = {}) {
   return `
     <label>Group<input name="group" list="dl-groups" autocomplete="off" value="${esc(d.group || '')}"></label>
+    ${traitFields(d.traits || {})}
     <label>Origin (site / colony / lab line)<input name="origin" list="dl-origins" autocomplete="off" value="${esc(d.origin || '')}"></label>
     <div class="row2">
       <label>Mother ID<input name="mother" list="dl-codes" autocomplete="off" value="${esc(d.mother || '')}"></label>
@@ -461,6 +506,16 @@ function idFields(pid, d = {}) {
     </div>
     ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}${datalist('dl-codes', allCodes())}`;
 }
+
+/** Inputs for all properties (name="trait-0", "trait-1" …) */
+function traitFields(values) {
+  if (!db.traits.length) return '';
+  return db.traits.map((t, i) => `
+    <label>${esc(t)}<input name="trait-${i}" list="dl-trait-${i}" autocomplete="off" value="${esc(values[t] || '')}"></label>
+    ${datalist(`dl-trait-${i}`, traitValues(t))}`).join('');
+}
+/** Read the property inputs back: [[name, value], …] */
+const readTraits = fd => db.traits.map((t, i) => [t, (fd.get(`trait-${i}`) || '').trim()]);
 
 /* ----- Automatic IDs -----
    4 characters from digits + capital letters, WITHOUT look-alikes
@@ -513,7 +568,7 @@ function newIdDialog(pid) {
         else if (code) {
           const a = animalByCode(code);
           if (a && membership(pid, a.id)) t = '⚠ This ID is already in this project.';
-          else if (a) t = 'This ID exists in another project – it will be added here (origin, parents, dates and death are shared).';
+          else if (a) t = 'This ID exists in another project – it will be added here (properties, origin, parents, dates and death are shared).';
         }
         f.querySelector('#codeHint').textContent = t;
       };
@@ -540,6 +595,7 @@ function newIdDialog(pid) {
         if (!a.motherId) a.motherId = resolveParent(fd.get('mother'));
         if (!a.fatherId) a.fatherId = resolveParent(fd.get('father'));
         joinProject(pid, a.id, fd.get('group').trim(), fd.get('assembledOn'));
+        readTraits(fd).forEach(([t, v]) => { if (v && !traitsOf(a)[t]) setTrait(a.id, t, v); });
       });
       save(); render();
       toast([created && `${created} created`, linked && `${linked} added from other projects`, skipped && `${skipped} already here`].filter(Boolean).join(', '));
@@ -576,7 +632,14 @@ function editAnimalDialog(pid, aid) {
     title: `Edit ${a.code}`,
     body: `${idFields(pid, { group: m.group, origin: a.origin, mother: codeOf(a.motherId), father: codeOf(a.fatherId), collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
-      <p class="hint">Group and assembling date belong to this project. Everything else is shared by all projects of this ID.</p>`,
+      <fieldset><legend>Add a new property</legend>
+        <div class="row2">
+          <label>Name<input name="newTrait" autocomplete="off" placeholder="e.g. morph"></label>
+          <label>Value<input name="newTraitValue" autocomplete="off"></label>
+        </div>
+      </fieldset>
+      <label>Date of property changes<input type="date" name="traitDate" value="${todayStr()}"></label>
+      <p class="hint">Group and assembling date belong to this project. Everything else is shared by all projects of this ID. Property changes are also written into the status history.</p>`,
     onOk: fd => {
       const mother = fd.get('mother').trim(), father = fd.get('father').trim();
       if (same(mother, a.code) || same(father, a.code)) { toast('An ID cannot be its own parent'); return false; }
@@ -585,6 +648,10 @@ function editAnimalDialog(pid, aid) {
       a.fatherId = resolveParent(father);
       a.collectedOn = fd.get('collectedOn');
       a.deathOn = fd.get('deathOn');
+      const tDate = fd.get('traitDate') || todayStr();
+      readTraits(fd).forEach(([t, v]) => setTrait(aid, t, v, tDate));
+      const nt = fd.get('newTrait').trim();
+      if (nt) setTrait(aid, addTrait(nt), fd.get('newTraitValue'), tDate);
       if (membership(pid, aid)) {
         m.group = fd.get('group').trim();
         m.assembledOn = fd.get('assembledOn');
@@ -630,6 +697,63 @@ function setGroupDialog(pid, aids) {
     onOk: fd => {
       aids.forEach(id => { const m = membership(pid, id); if (m) m.group = fd.get('group').trim(); });
       touch(pid); save(); ui.selecting = false; ui.selected.clear(); render(); toast('Group set');
+    },
+  });
+}
+
+function setTraitDialog(pid, aids, t) {
+  modal({
+    title: `${t} for ${aids.length} ID${aids.length > 1 ? 's' : ''}`, okText: 'Set',
+    body: `<label>${esc(t)}<input name="v" list="dl-tv" autocomplete="off"></label>
+      <label>Date<input type="date" name="date" value="${todayStr()}"></label>
+      <p class="hint">Empty value removes the property.</p>${datalist('dl-tv', traitValues(t))}`,
+    onOk: fd => {
+      let n = 0;
+      aids.forEach(id => { if (setTrait(id, t, fd.get('v'), fd.get('date'))) n++; });
+      touch(pid); save(); ui.selecting = false; ui.selected.clear(); render(); toast(`${t} changed for ${n} ID${n === 1 ? '' : 's'}`);
+    },
+  });
+}
+
+/** Manage the list of properties (shared by all projects). */
+function traitsDialog() {
+  modal({
+    title: 'Properties', okText: 'Add',
+    body: `<p class="muted" style="margin:0">Lasting details of an animal, e.g. colour mark or sex. They belong to the animal (same in all projects), always show the current value, and every change is logged in the history.</p>
+      <div>${db.traits.map((t, i) => `<div class="frow"><span>${esc(t)}</span><span>
+        <button type="button" class="btn sm ghost" data-ren="${i}">Rename</button>
+        <button type="button" class="btn sm ghost" data-rm="${i}">Remove</button></span></div>`).join('') || '<p class="muted">No properties yet.</p>'}</div>
+      <label>New property<input name="t" autocomplete="off" placeholder="e.g. morph"></label>`,
+    onOpen: f => {
+      f.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
+        const t = db.traits[+b.dataset.rm];
+        confirmBox(`Remove “${t}”?`, `The current “${esc(t)}” values of all IDs are removed. Entries already in the history stay.`, 'Remove', () => {
+          db.traits = db.traits.filter(x => x !== t);
+          db.animals.forEach(a => { if (a.traits) delete a.traits[t]; });
+          db.projects.forEach(p => p.filters = (p.filters || []).filter(x => !(x.type === 'trait' && x.feature === t)));
+          save(); render(); traitsDialog();
+        });
+      });
+      f.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => {
+        const old = db.traits[+b.dataset.ren];
+        modal({
+          title: 'Rename property', body: `<label>Name<input name="n" required value="${esc(old)}"></label>`,
+          onOk: fd => {
+            const n = fd.get('n').trim();
+            if (db.traits.some(x => x !== old && same(x, n))) { toast('This property already exists'); return false; }
+            db.traits[db.traits.indexOf(old)] = n;
+            db.animals.forEach(a => { if (a.traits && old in a.traits) { a.traits[n] = a.traits[old]; delete a.traits[old]; } });
+            db.events.forEach(e => { if (e.kind === 'trait' && e.feature === old) e.feature = n; });
+            db.projects.forEach(p => (p.filters || []).forEach(x => { if (x.type === 'trait' && x.feature === old) x.feature = n; }));
+            save(); render(); setTimeout(traitsDialog);
+          },
+        });
+      });
+    },
+    onOk: fd => {
+      const v = fd.get('t').trim();
+      if (!v) return true;
+      addTrait(v); save(); render(); traitsDialog(); return false;
     },
   });
 }
@@ -701,7 +825,8 @@ function editEventDialog(pid, evId) {
       ['feature', 'value', 'note'].forEach(k => e[k] = fd.get(k).trim());
       e.date = fd.get('date'); e.time = fd.get('time');
       if (isDeathFeature(e.feature)) animal(e.animalId).deathOn = e.date;
-      addFeature(project(pid), e.feature); touch(pid); save(); render();
+      if (e.kind !== 'trait') addFeature(project(pid), e.feature);
+      touch(pid); save(); render();
     },
   });
 }
@@ -709,7 +834,7 @@ function editEventDialog(pid, evId) {
 /* ----- Filters ----- */
 const FILTER_TYPES = {
   group: 'Group is', status: 'Alive / dead', has: 'Has status', hasnot: 'Does NOT have status',
-  last: 'Latest value of status is', mother: 'Mother is', father: 'Father is', origin: 'Origin contains',
+  last: 'Latest value of status is', trait: 'Property is', mother: 'Mother is', father: 'Father is', origin: 'Origin contains',
 };
 function filterLabel(f) {
   switch (f.type) {
@@ -718,6 +843,7 @@ function filterLabel(f) {
     case 'has': return `has ${f.feature}`;
     case 'hasnot': return `no ${f.feature}`;
     case 'last': return `${f.feature} = ${f.value}`;
+    case 'trait': return f.value ? `${f.feature}: ${f.value}` : `no ${f.feature}`;
     case 'mother': return `mother ${f.value}`;
     case 'father': return `father ${f.value}`;
     case 'origin': return `origin ∋ ${f.value}`;
@@ -731,6 +857,7 @@ function matchFilter({ a, m, ev }, f) {
     case 'has': return ev.some(e => same(e.feature, f.feature));
     case 'hasnot': return !ev.some(e => same(e.feature, f.feature));
     case 'last': { const e = ev.find(x => same(x.feature, f.feature)); return !!e && same(e.value, f.value); }
+    case 'trait': return same(traitsOf(a)[f.feature], f.value);
     case 'mother': return same(codeOf(a.motherId), f.value);
     case 'father': return same(codeOf(a.fatherId), f.value);
     case 'origin': return String(a.origin || '').toLowerCase().includes(String(f.value).toLowerCase());
@@ -750,7 +877,9 @@ function filterDialog(pid) {
         <legend>Add a filter</legend>
         <label>Type<select name="type">${Object.entries(FILTER_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
         <label data-show="has hasnot last">Status<input name="feature" list="dl-features" autocomplete="off"></label>
-        <label data-show="group last mother father origin">Value<input name="value" list="dl-fv" autocomplete="off"></label>
+        <label data-show="trait">Property<select name="trait">${db.traits.map(t => `<option>${esc(t)}</option>`).join('')}</select></label>
+        <label data-show="group last trait mother father origin">Value<input name="value" list="dl-fv" autocomplete="off"></label>
+        <p class="hint" data-show="trait">Leave the value empty to find IDs where it is not set yet.</p>
         <label data-show="status">Show<select name="st"><option value="alive">alive</option><option value="dead">dead</option></select></label>
       </fieldset>
       ${p.filters.length ? '<button type="button" class="btn ghost" id="clearF">Clear all filters</button>' : ''}
@@ -762,10 +891,11 @@ function filterDialog(pid) {
         const vals = t === 'group' ? groupsOf(pid)
           : (t === 'mother' || t === 'father') ? allCodes()
           : t === 'origin' ? origins()
-          : t === 'last' ? valuesFor(pid, f.feature.value) : [];
+          : t === 'last' ? valuesFor(pid, f.feature.value)
+          : t === 'trait' ? traitValues(f.trait.value) : [];
         f.querySelector('#dl-fv').innerHTML = vals.map(v => `<option value="${esc(v)}">`).join('');
       };
-      f.type.onchange = sync; f.feature.oninput = sync; sync();
+      f.type.onchange = sync; f.feature.oninput = sync; f.trait.onchange = sync; sync();
       f.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { p.filters.splice(+b.dataset.rm, 1); save(); renderList(pid); filterDialog(pid); });
       const c = f.querySelector('#clearF');
       if (c) c.onclick = () => { p.filters = []; save(); renderList(pid); closeModal(); };
@@ -776,6 +906,7 @@ function filterDialog(pid) {
       if (t === 'status') nf = { type: t, value: fd.get('st') };
       else if (['has', 'hasnot'].includes(t) && feature) nf = { type: t, feature };
       else if (t === 'last' && feature && value) nf = { type: t, feature, value };
+      else if (t === 'trait' && fd.get('trait')) nf = { type: t, feature: fd.get('trait'), value };
       else if (['group', 'mother', 'father', 'origin'].includes(t) && value) nf = { type: t, value };
       if (nf) { p.filters.push(nf); save(); }
       renderList(pid);
@@ -793,6 +924,7 @@ function settingsDialog() {
           <option value="," ${settings.sep === ',' ? 'selected' : ''}>Comma ( , ) – R, Python, Google Sheets</option>
           <option value=";" ${settings.sep === ';' ? 'selected' : ''}>Semicolon ( ; ) – German Excel</option>
         </select></label>
+      <button type="button" class="btn" id="traitsBtn">Properties (colour mark, sex …)</button>
       <fieldset><legend>Backup</legend>
         <p class="muted" style="margin:0">All data is stored only in this browser on this device. Make regular backups – e.g. share them to your Google Drive.
         <br>Last backup: <b>${settings.lastBackup ? settings.lastBackup.slice(0, 10) : 'never'}</b></p>
@@ -802,6 +934,7 @@ function settingsDialog() {
       <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries</p>`,
     onOpen: f => {
       f.querySelector('#bk').onclick = backupNow;
+      f.querySelector('#traitsBtn').onclick = traitsDialog;
       f.querySelector('#rs').onchange = e => restoreFrom(e.target.files[0]);
     },
     onOk: fd => { settings.sep = fd.get('sep'); saveSettings(); toast('Saved'); },
@@ -831,22 +964,23 @@ function buildCsvFiles(pid, onlyVisible) {
   const p = project(pid);
   const rows = visibleMembers(pid, { ignoreFilters: !onlyVisible });
   // death already has its own column (death_date), so it gets no extra columns here
-  const feats = sortNat(uniq(rows.flatMap(r => r.ev.map(e => e.feature)))).filter(f => !isDeathFeature(f));
+  // properties get their own columns (current value), so their history entries get no extra columns here
+  const feats = sortNat(uniq(rows.flatMap(r => r.ev.filter(e => e.kind !== 'trait').map(e => e.feature)))).filter(f => !isDeathFeature(f));
 
-  const head = ['id', 'group', 'status', 'collecting_date', 'assembling_date', 'death_date', 'origin', 'mother', 'father', 'n_entries'];
+  const head = ['id', 'group', 'status', ...db.traits.map(colName), 'collecting_date', 'assembling_date', 'death_date', 'origin', 'mother', 'father', 'n_entries'];
   feats.forEach(f => { const c = colName(f); head.push(`${c}_last_value`, `${c}_last_date`, `${c}_n`); });
   const wide = [head, ...rows.map(({ a, m, ev }) => {
-    const r = [a.code, m.group, statusOf(a), a.collectedOn, m.assembledOn, a.deathOn, a.origin, codeOf(a.motherId), codeOf(a.fatherId), ev.length];
+    const r = [a.code, m.group, statusOf(a), ...db.traits.map(t => traitsOf(a)[t] || ''), a.collectedOn, m.assembledOn, a.deathOn, a.origin, codeOf(a.motherId), codeOf(a.fatherId), ev.length];
     feats.forEach(f => {
-      const fe = ev.filter(e => same(e.feature, f));
+      const fe = ev.filter(e => e.kind !== 'trait' && same(e.feature, f));
       r.push(fe[0] ? fe[0].value : '', fe[0] ? fe[0].date : '', fe.length);
     });
     return r;
   })];
 
-  const long = [['id', 'group', 'date', 'time', 'status', 'value', 'note', 'entered_at']];
+  const long = [['id', 'group', 'date', 'time', 'status', 'value', 'note', 'type', 'entered_at']];
   rows.forEach(({ a, m, ev }) => ev.slice().reverse().forEach(e =>
-    long.push([a.code, m.group, e.date, e.time, e.feature, e.value, e.note, e.createdAt])));
+    long.push([a.code, m.group, e.date, e.time, e.feature, e.value, e.note, e.kind === 'trait' ? 'property' : 'status', e.createdAt])));
 
   const base = `${slug(p.name)}_${todayStr()}`;
   const type = 'text/csv';
