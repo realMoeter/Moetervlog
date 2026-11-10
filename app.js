@@ -52,6 +52,30 @@ function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
   catch (e) { alert('Could not save! Storage may be full. Please make a backup.\n\n' + e.message); }
 }
+/** One-time repair (version 5): an older version emptied all properties when "Edit details" was saved.
+    For every property whose LAST history entry is "(removed)", the previous value is restored
+    and these wrong "(removed)" entries are deleted. */
+function repairWipedTraits() {
+  if (db.repairedTraits) return;
+  const wrong = new Set();
+  let restored = 0;
+  db.animals.forEach(a => (db.traits || []).forEach(t => {
+    if (traitsOf(a)[t]) return;
+    const evs = db.events.filter(e => e.kind === 'trait' && e.animalId === a.id && e.feature === t).sort(byNewest);
+    if (!evs.length || evs[0].value !== '(removed)') return;
+    const m = /^changed from (.*)$/.exec(evs[0].note || '');
+    if (!m) return;
+    a.traits = Object.assign({}, a.traits, { [t]: m[1] });
+    restored++;
+    // drop the "(removed)" entries of this change in all projects (same moment)
+    db.events.forEach(e => { if (e.kind === 'trait' && e.animalId === a.id && e.feature === t && e.value === '(removed)' && e.createdAt === evs[0].createdAt) wrong.add(e.id); });
+  }));
+  db.events = db.events.filter(e => !wrong.has(e.id));
+  db.repairedTraits = true;
+  save();
+  if (restored) setTimeout(() => toast(`Restored ${restored} propert${restored === 1 ? 'y' : 'ies'} that an older version had emptied`), 600);
+}
+
 function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
 
 // Lookups
@@ -757,7 +781,7 @@ function editAnimalDialog(pid, aid) {
   const a = animal(aid), m = membership(pid, aid) || {};
   modal({
     title: `Edit ${a.code}`,
-    body: `${idFields(pid, { group: m.group, origin: a.origin, mother: codeOf(a.motherId), father: codeOf(a.fatherId), collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
+    body: `${idFields(pid, { group: m.group, traits: traitsOf(a), origin: a.origin, mother: codeOf(a.motherId), father: codeOf(a.fatherId), collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
       <fieldset><legend>Add a new property</legend>
         <div class="row2">
@@ -1217,6 +1241,7 @@ function render() {
   else renderProjects();
 }
 
+repairWipedTraits();   // one-time fix for data from an older version
 window.addEventListener('hashchange', () => { closeModal(); render(); });
 render();
 
