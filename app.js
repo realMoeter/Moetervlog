@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
+const APP_VERSION = 8;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -1097,10 +1098,10 @@ function settingsDialog() {
       <fieldset><legend>Backup</legend>
         <p class="muted" style="margin:0">All data is stored only in this browser on this device. Make regular backups – e.g. share them to your Google Drive.
         <br>Last backup: <b>${settings.lastBackup ? settings.lastBackup.slice(0, 10) : 'never'}</b></p>
-        <button type="button" class="btn primary" id="bk">Back up everything (.json)</button>
+        <button type="button" class="btn primary" id="bk">Back up everything</button>
         <label class="btn" style="color:var(--ink)">Restore from backup…<input type="file" id="rs" accept=".json,.txt,application/json,text/plain" hidden></label>
       </fieldset>
-      <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries</p>`,
+      <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries · app version ${APP_VERSION}</p>`,
     onOpen: f => {
       f.querySelector('#bk').onclick = backupNow;
       f.querySelector('#traitsBtn').onclick = traitsDialog;
@@ -1169,12 +1170,13 @@ function download(file) {
 
 /** Opens the phone's share sheet (Gmail, Drive, …). Falls back to download on computers. */
 async function shareFiles(files, title) {
+  let why = !navigator.share ? 'browser cannot share' : 'browser cannot share this file type';
   if (navigator.canShare && navigator.canShare({ files })) {
     try { await navigator.share({ files, title }); return true; }
-    catch (e) { if (e.name === 'AbortError') return false; }
+    catch (e) { if (e.name === 'AbortError') return false; why = e.name; }
   }
   files.forEach(download);
-  toast('Downloaded – attach to a mail or upload to Drive');
+  toast(`Downloaded (${why}) – find it in “Downloads”`);
   return true;
 }
 
