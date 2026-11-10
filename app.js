@@ -136,6 +136,10 @@ function eventIndex(pid) {
   return idx;
 }
 
+/** Mother/father are no longer standard fields (since v6). Older data may still contain them:
+    then they are still shown, filterable and exported. */
+const hasParents = () => db.animals.some(a => a.motherId || a.fatherId);
+
 /** Remove animals that belong to no project and are nobody's parent. */
 function cleanupOrphans() {
   const used = new Set(db.members.map(m => m.animalId));
@@ -285,7 +289,7 @@ let ui = { pid: null, selecting: false, selected: new Set(), search: '', openGro
 
 /* What the tiles can be grouped by. Value stored in project.groupBy */
 function groupByOptions() {
-  return [['group', 'Group'], ...db.traits.map(t => ['t:' + t, t]), ['origin', 'Origin'], ['mother', 'Mother'], ['status', 'Alive / dead']];
+  return [['group', 'Group'], ...db.traits.map(t => ['t:' + t, t]), ['origin', 'Origin'], ...(hasParents() ? [['mother', 'Mother']] : []), ['status', 'Alive / dead']];
 }
 function groupKey(x, by) {
   if (by === 'group') return x.m.group || '';
@@ -543,8 +547,8 @@ function renderAnimal(pid, aid) {
         <dt>Group</dt><dd>${esc(m && m.group || '–')}</dd>
         ${db.traits.map(t => `<dt>${esc(t)}</dt><dd>${esc(traitsOf(a)[t] || '–')}</dd>`).join('')}
         <dt>Origin</dt><dd>${esc(a.origin || '–')}</dd>
-        <dt>Mother</dt><dd>${link(a.motherId)}</dd>
-        <dt>Father</dt><dd>${link(a.fatherId)}</dd>
+        ${a.motherId ? `<dt>Mother</dt><dd>${link(a.motherId)}</dd>` : ''}
+        ${a.fatherId ? `<dt>Father</dt><dd>${link(a.fatherId)}</dd>` : ''}
         <dt>Collecting date</dt><dd>${fmtDate(a.collectedOn)}</dd>
         <dt>Assembling date</dt><dd>${fmtDate(m && m.assembledOn)}</dd>
         <dt>Death</dt><dd>${fmtDate(a.deathOn)}</dd>
@@ -647,15 +651,10 @@ function idFields(pid, d = {}) {
     ${traitFields(d.traits || {})}
     <label>Origin (site / colony / lab line)<input name="origin" list="dl-origins" autocomplete="off" value="${esc(d.origin || '')}"></label>
     <div class="row2">
-      <label>Mother ID<input name="mother" list="dl-codes" autocomplete="off" value="${esc(d.mother || '')}"></label>
-      <label>Father ID<input name="father" list="dl-codes" autocomplete="off" value="${esc(d.father || '')}"></label>
-    </div>
-    <p class="hint">Parents are their own IDs. If you type a parent ID that doesn't exist yet, it is created.</p>
-    <div class="row2">
       <label>Collecting date<input type="date" name="collectedOn" value="${esc(d.collectedOn || '')}"></label>
       <label>Assembling date<input type="date" name="assembledOn" value="${esc(d.assembledOn || '')}"></label>
     </div>
-    ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}${datalist('dl-codes', allCodes())}`;
+    ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}`;
 }
 
 /** Inputs for all properties (name="trait-0", "trait-1" …) */
@@ -719,7 +718,7 @@ function newIdDialog(pid, preset = {}) {
         else if (code) {
           const a = animalByCode(code);
           if (a && membership(pid, a.id)) t = '⚠ This ID is already in this project.';
-          else if (a) t = 'This ID exists in another project – it will be added here (properties, origin, parents, dates and death are shared).';
+          else if (a) t = 'This ID exists in another project – it will be added here (properties, origin, dates and death are shared).';
         }
         f.querySelector('#codeHint').textContent = t;
       };
@@ -743,8 +742,6 @@ function newIdDialog(pid, preset = {}) {
         // shared fields: only fill what is still empty for existing IDs
         a.origin = a.origin || fd.get('origin').trim();
         a.collectedOn = a.collectedOn || fd.get('collectedOn');
-        if (!a.motherId) a.motherId = resolveParent(fd.get('mother'));
-        if (!a.fatherId) a.fatherId = resolveParent(fd.get('father'));
         joinProject(pid, a.id, fd.get('group').trim(), fd.get('assembledOn'));
         readTraits(fd).forEach(([t, v]) => { if (v && !traitsOf(a)[t]) setTrait(a.id, t, v); });
       });
@@ -781,7 +778,7 @@ function editAnimalDialog(pid, aid) {
   const a = animal(aid), m = membership(pid, aid) || {};
   modal({
     title: `Edit ${a.code}`,
-    body: `${idFields(pid, { group: m.group, traits: traitsOf(a), origin: a.origin, mother: codeOf(a.motherId), father: codeOf(a.fatherId), collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
+    body: `${idFields(pid, { group: m.group, traits: traitsOf(a), origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
       <fieldset><legend>Add a new property</legend>
         <div class="row2">
@@ -792,11 +789,7 @@ function editAnimalDialog(pid, aid) {
       <label>Date of property changes<input type="date" name="traitDate" value="${todayStr()}"></label>
       <p class="hint">Group and assembling date belong to this project. Everything else is shared by all projects of this ID. Property changes are also written into the status history.</p>`,
     onOk: fd => {
-      const mother = fd.get('mother').trim(), father = fd.get('father').trim();
-      if (same(mother, a.code) || same(father, a.code)) { toast('An ID cannot be its own parent'); return false; }
       a.origin = fd.get('origin').trim();
-      a.motherId = resolveParent(mother);
-      a.fatherId = resolveParent(father);
       a.collectedOn = fd.get('collectedOn');
       a.deathOn = fd.get('deathOn');
       const tDate = fd.get('traitDate') || todayStr();
@@ -1143,10 +1136,11 @@ function buildCsvFiles(pid, onlyVisible) {
   // properties get their own columns (current value), so their history entries get no extra columns here
   const feats = sortNat(uniq(rows.flatMap(r => r.ev.filter(e => e.kind !== 'trait').map(e => e.feature)))).filter(f => !isDeathFeature(f));
 
-  const head = ['id', 'group', 'status', ...db.traits.map(colName), 'collecting_date', 'assembling_date', 'death_date', 'origin', 'mother', 'father', 'n_entries'];
+  const par = rows.some(r => r.a.motherId || r.a.fatherId);   // mother/father columns only if used
+  const head = ['id', 'group', 'status', ...db.traits.map(colName), 'collecting_date', 'assembling_date', 'death_date', 'origin', ...(par ? ['mother', 'father'] : []), 'n_entries'];
   feats.forEach(f => { const c = colName(f); head.push(`${c}_last_value`, `${c}_last_date`, `${c}_n`); });
   const wide = [head, ...rows.map(({ a, m, ev }) => {
-    const r = [a.code, m.group, statusOf(a), ...db.traits.map(t => traitsOf(a)[t] || ''), a.collectedOn, m.assembledOn, a.deathOn, a.origin, codeOf(a.motherId), codeOf(a.fatherId), ev.length];
+    const r = [a.code, m.group, statusOf(a), ...db.traits.map(t => traitsOf(a)[t] || ''), a.collectedOn, m.assembledOn, a.deathOn, a.origin, ...(par ? [codeOf(a.motherId), codeOf(a.fatherId)] : []), ev.length];
     feats.forEach(f => {
       const fe = ev.filter(e => e.kind !== 'trait' && same(e.feature, f));
       r.push(fe[0] ? fe[0].value : '', fe[0] ? fe[0].date : '', fe.length);
