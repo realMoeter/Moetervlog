@@ -101,7 +101,8 @@ Separator comma or semicolon (for German Excel): Settings on the start screen.
 The data is stored **only in the browser on that one device** – not on GitHub, not in the cloud.
 It survives closing the app and restarting the phone, but it is gone if you *clear the browser data* or uninstall the browser.
 
-→ **Back up regularly**: Start screen ⋮ → *Back up everything* → share the `.json` to Google Drive.
+→ **Back up regularly**: Start screen ⋮ → *Back up everything* → choose Gmail or Google Drive in the share menu.
+On Chrome the backup is shared as `.txt` (Chrome does not share `.json` files) – the content is the same, *Restore* accepts both.
 The app reminds you if the last backup is older than 7 days. *Restore from backup* loads it again (also on a new phone).
 
 ---

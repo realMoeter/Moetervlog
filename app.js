@@ -1098,7 +1098,7 @@ function settingsDialog() {
         <p class="muted" style="margin:0">All data is stored only in this browser on this device. Make regular backups – e.g. share them to your Google Drive.
         <br>Last backup: <b>${settings.lastBackup ? settings.lastBackup.slice(0, 10) : 'never'}</b></p>
         <button type="button" class="btn primary" id="bk">Back up everything (.json)</button>
-        <label class="btn" style="color:var(--ink)">Restore from backup…<input type="file" id="rs" accept=".json,application/json" hidden></label>
+        <label class="btn" style="color:var(--ink)">Restore from backup…<input type="file" id="rs" accept=".json,.txt,application/json,text/plain" hidden></label>
       </fieldset>
       <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries</p>`,
     onOpen: f => {
@@ -1200,7 +1200,13 @@ function exportDialog(pid) {
 }
 
 async function backupNow() {
-  const file = new File([JSON.stringify(db, null, 1)], `moetervlog-backup_${todayStr()}.json`, { type: 'application/json' });
+  const data = JSON.stringify(db, null, 1), name = `moetervlog-backup_${todayStr()}`;
+  let file = new File([data], `${name}.json`, { type: 'application/json' });
+  // Chrome only shares certain file types (csv, txt, images …) – not .json.
+  // Then the same content is shared as .txt, so it can be sent by mail / saved to Drive.
+  // "Restore from backup" accepts both endings.
+  const txt = new File([data], `${name}.txt`, { type: 'text/plain' });
+  if (!(navigator.canShare && navigator.canShare({ files: [file] })) && navigator.canShare && navigator.canShare({ files: [txt] })) file = txt;
   if (await shareFiles([file], 'Moetervlog backup')) {
     settings.lastBackup = new Date().toISOString(); saveSettings();
     closeModal(); render();

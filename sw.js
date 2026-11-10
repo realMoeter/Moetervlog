@@ -1,7 +1,7 @@
 /* Service worker: lets the app open without internet.
    IMPORTANT: when you change the app, raise the version number below
    (v1 → v2 …). Then the phone fetches the new files. */
-const CACHE = 'moetervlog-v6';
+const CACHE = 'moetervlog-v7';
 const FILES = ['./', './index.html', './style.css', './app.js', './manifest.json',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable.png'];
 
