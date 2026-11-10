@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
-const APP_VERSION = 8;   // shown in Settings – raise together with the number in sw.js
+const APP_VERSION = 9;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -1203,12 +1203,12 @@ function exportDialog(pid) {
 
 async function backupNow() {
   const data = JSON.stringify(db, null, 1), name = `moetervlog-backup_${todayStr()}`;
-  let file = new File([data], `${name}.json`, { type: 'application/json' });
-  // Chrome only shares certain file types (csv, txt, images …) – not .json.
-  // Then the same content is shared as .txt, so it can be sent by mail / saved to Drive.
-  // "Restore from backup" accepts both endings.
+  // Sharing: always as .txt. Chrome on Android refuses .json files when sharing (NotAllowedError),
+  // even though it first says it could share them. The content is the same JSON text;
+  // "Restore from backup" accepts .txt and .json. Only if sharing is impossible → download as .json.
   const txt = new File([data], `${name}.txt`, { type: 'text/plain' });
-  if (!(navigator.canShare && navigator.canShare({ files: [file] })) && navigator.canShare && navigator.canShare({ files: [txt] })) file = txt;
+  const json = new File([data], `${name}.json`, { type: 'application/json' });
+  const file = (navigator.canShare && navigator.canShare({ files: [txt] })) ? txt : json;
   if (await shareFiles([file], 'Moetervlog backup')) {
     settings.lastBackup = new Date().toISOString(); saveSettings();
     closeModal(); render();
