@@ -11,14 +11,16 @@
      6. START       – router (which screen to show) + start-up
 
    Data model (all saved as one JSON object in the browser's storage):
-     projects : { id, name, features:[…], filters:[…], createdAt, updatedAt }
-     animals  : { id, code, origin, motherId, fatherId, collectedOn, deathOn, traits:{name:value} }
-                → one entry per real individual, SHARED by all projects
-     traits   : [names]  → "properties" of an animal (colour mark, sex …), same list for all projects.
-                A property always shows its CURRENT value; every change is also logged
-                as an entry (kind:'trait') in the history of all projects of that ID.
-     members  : { projectId, animalId, group, assembledOn }
-                → "this ID takes part in this project" (+ project-specific fields)
+     projects : { id, name, features:[…], traits:[…], filter:{…}, closedAt, closeLog:[…], createdAt, updatedAt }
+                traits = this project's list of properties (colour mark, sex …)
+     animals  : { id, code, origin, motherId, fatherId, collectedOn, deathOn }
+                → one entry per real individual, SHARED by all projects (origin, collecting date, death)
+     members  : { projectId, animalId, group, assembledOn, traits:{name:value}, joinedAt }
+                → "this ID takes part in this project" + everything that belongs to the project:
+                  group, assembling date and the PROPERTIES (since version 11 per project).
+                  When an ID is added to another project, its properties can be taken over
+                  (preview with checkboxes); after that both projects are independent.
+                  Every property change is logged as an entry (kind:'trait') in that project.
      events   : { id, projectId, animalId, feature, value, date, time, note }
                 → every status you add, always with a date
    ===================================================================== */
@@ -26,6 +28,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
+const APP_VERSION = 11;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -35,7 +38,7 @@ let db = loadData();
 let settings = loadSettings();
 
 function emptyDb() {
-  return { version: 1, projects: [], animals: [], members: [], events: [], traits: DEFAULT_TRAITS.slice() };
+  return { version: 2, projects: [], animals: [], members: [], events: [] };
 }
 function loadData() {
   try {
@@ -52,6 +55,48 @@ function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
   catch (e) { alert('Could not save! Storage may be full. Please make a backup.\n\n' + e.message); }
 }
+/** One-time repair (version 5): an older version emptied all properties when "Edit details" was saved.
+    For every property whose LAST history entry is "(removed)", the previous value is restored
+    and these wrong "(removed)" entries are deleted. */
+function repairWipedTraits() {
+  if (db.repairedTraits) return;
+  const wrong = new Set();
+  let restored = 0;
+  db.animals.forEach(a => (db.traits || []).forEach(t => {
+    if ((a.traits || {})[t]) return;
+    const evs = db.events.filter(e => e.kind === 'trait' && e.animalId === a.id && e.feature === t).sort(byNewest);
+    if (!evs.length || evs[0].value !== '(removed)') return;
+    const m = /^changed from (.*)$/.exec(evs[0].note || '');
+    if (!m) return;
+    a.traits = Object.assign({}, a.traits, { [t]: m[1] });
+    restored++;
+    // drop the "(removed)" entries of this change in all projects (same moment)
+    db.events.forEach(e => { if (e.kind === 'trait' && e.animalId === a.id && e.feature === t && e.value === '(removed)' && e.createdAt === evs[0].createdAt) wrong.add(e.id); });
+  }));
+  db.events = db.events.filter(e => !wrong.has(e.id));
+  db.repairedTraits = true;
+  save();
+  if (restored) setTimeout(() => toast(`Restored ${restored} propert${restored === 1 ? 'y' : 'ies'} that an older version had emptied`), 600);
+}
+
+/** Data version 1 → 2 (app version 11): properties move from the animal into each project.
+    Every project gets the old property list, every ID in a project a copy of its values.
+    Nothing is lost. Runs once (also after restoring an old backup). */
+function migrateData() {
+  if ((db.version || 1) >= 2) return;
+  repairWipedTraits();
+  const list = (db.traits && db.traits.length ? db.traits : DEFAULT_TRAITS).slice();
+  db.projects.forEach(p => { if (!p.traits) p.traits = list.slice(); });
+  db.members.forEach(m => {
+    const a = animal(m.animalId);
+    if (a && a.traits && Object.keys(a.traits).length) m.traits = Object.assign({}, a.traits);
+  });
+  db.animals.forEach(a => delete a.traits);
+  delete db.traits;
+  db.version = 2;
+  save();
+}
+
 function saveSettings() { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }
 
 // Lookups
@@ -73,34 +118,37 @@ function addFeature(p, f) {
   if (f && !p.features.some(x => same(x, f))) p.features.push(f);
 }
 
-/* ----- Properties (traits) ----- */
-const traitsOf = a => (a && a.traits) || {};
-const traitValues = name => sortNat(uniq(db.animals.map(a => traitsOf(a)[name])));
-const traitSummary = a => db.traits.map(t => traitsOf(a)[t]).filter(Boolean).join(' · ');
+/* ----- Properties (traits) – belong to the project, stored in the membership ----- */
+const projTraits = pid => { const p = project(pid); return p ? (p.traits = p.traits || []) : []; };
+const traitsOf = m => (m && m.traits) || {};
+/** suggestions: values used for this property in any project (helps to keep spelling consistent) */
+const traitValues = name => sortNat(uniq(db.members.map(m => traitsOf(m)[name])));
+const traitSummary = (pid, m) => projTraits(pid).map(t => traitsOf(m)[t]).filter(Boolean).join(' · ');
 
-function addTrait(name) {
+function addTrait(pid, name) {
   name = String(name || '').trim();
-  const existing = db.traits.find(t => same(t, name));
+  const list = projTraits(pid);
+  const existing = list.find(t => same(t, name));
   if (existing) return existing;
-  if (name) db.traits.push(name);
+  if (name) list.push(name);
   return name;
 }
 
-/** Change a property. If the value really changes, a history entry is added
-    in every project this ID belongs to (so each project's CSV has the history). */
-function setTrait(aid, name, value, date = todayStr()) {
-  const a = animal(aid);
+/** Change a property of an ID in ONE project. If the value really changes,
+    a history entry is added in that project. */
+function setTrait(pid, aid, name, value, date = todayStr(), note = null) {
+  const m = membership(pid, aid);
+  if (!m) return false;
   value = String(value || '').trim();
-  const old = traitsOf(a)[name] || '';
+  const old = traitsOf(m)[name] || '';
   if (old === value) return false;
-  a.traits = Object.assign({}, a.traits, { [name]: value });
-  if (!value) delete a.traits[name];
-  const now = new Date().toISOString();
-  db.members.filter(m => m.animalId === aid).forEach(m => db.events.push({
-    id: uid(), kind: 'trait', projectId: m.projectId, animalId: aid, createdAt: now,
+  m.traits = Object.assign({}, m.traits, { [name]: value });
+  if (!value) delete m.traits[name];
+  db.events.push({
+    id: uid(), kind: 'trait', projectId: pid, animalId: aid, createdAt: new Date().toISOString(),
     feature: name, value: value || '(removed)', date, time: nowTime(),
-    note: old ? `changed from ${old}` : 'set',
-  }));
+    note: note || (old ? `changed from ${old}` : 'set'),
+  });
   return true;
 }
 
@@ -111,6 +159,10 @@ function eventIndex(pid) {
     .forEach(e => (idx[e.animalId] = idx[e.animalId] || []).push(e));
   return idx;
 }
+
+/** Mother/father are no longer standard fields (since v6). Older data may still contain them:
+    then they are still shown, filterable and exported. */
+const hasParents = () => db.animals.some(a => a.motherId || a.fatherId);
 
 /** Remove animals that belong to no project and are nobody's parent. */
 function cleanupOrphans() {
@@ -235,105 +287,239 @@ const app = () => $('#app');
 function renderProjects() {
   document.body.classList.remove('selecting');
   setTop({ title: 'Moetervlog', actions: [{ icon: I.more, label: 'Settings & backup', fn: settingsDialog }] });
-  const list = db.projects.slice().sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  const list = db.projects.filter(p => !p.closedAt).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  const closed = db.projects.filter(p => p.closedAt).sort((a, b) => b.closedAt.localeCompare(a.closedAt));
+  const card = p => {
+    const ms = membersOf(p.id);
+    const alive = ms.filter(m => statusOf(animal(m.animalId)) === 'alive').length;
+    return `<li><a class="card ${p.closedAt ? 'closed' : ''}" href="#/p/${p.id}">
+      <span class="card-title">${esc(p.name)}</span>
+      <span class="card-meta">${ms.length} IDs · ${alive} alive${p.closedAt ? ` · closed ${esc(p.closedAt)}` : ''}</span></a></li>`;
+  };
   const needBackup = db.events.length + db.animals.length > 0 && daysSince(settings.lastBackup) > 7;
 
   app().innerHTML = `
     <section class="wrap">
       ${needBackup ? `<div class="banner"><span>${settings.lastBackup ? `Last backup ${daysSince(settings.lastBackup)} days ago.` : 'No backup yet.'} Your data lives only on this device.</span><button class="btn sm primary" id="bkBtn">Back up</button></div>` : ''}
       <p class="eyebrow">Experiments</p>
-      ${list.length ? `<ul class="cards">${list.map(p => {
-        const ms = membersOf(p.id);
-        const alive = ms.filter(m => statusOf(animal(m.animalId)) === 'alive').length;
-        return `<li><a class="card" href="#/p/${p.id}">
-          <span class="card-title">${esc(p.name)}</span>
-          <span class="card-meta">${ms.length} IDs · ${alive} alive</span></a></li>`;
-      }).join('')}</ul>`
-      : `<div class="empty"><p><b>No projects yet.</b></p><p class="muted">Create your first experiment to start collecting data.</p></div>`}
+      ${list.length ? `<ul class="cards">${list.map(card).join('')}</ul>`
+      : (closed.length ? '<p class="muted">No running projects.</p>'
+        : `<div class="empty"><p><b>No projects yet.</b></p><p class="muted">Create your first experiment to start collecting data.</p></div>`)}
+      ${closed.length ? `<p class="eyebrow" style="margin-top:28px">Closed</p><ul class="cards">${closed.map(card).join('')}</ul>` : ''}
     </section>
     <button class="fab" id="fab">${I.plus}<span>New project</span></button>`;
   $('#fab').onclick = newProjectDialog;
   if ($('#bkBtn')) $('#bkBtn').onclick = backupNow;
 }
 
-/* ----- 3b. ID list of one project ----- */
-let ui = { pid: null, selecting: false, selected: new Set(), search: '' };
+/* ----- 3b. One project: group view ("petri dishes") or ID list ----- */
+let ui = { pid: null, selecting: false, selected: new Set(), search: '', openGroup: null, keepSel: false };
 
-function renderProject(pid) {
+/* What the tiles can be grouped by. Value stored in project.groupBy */
+function groupByOptions(pid) {
+  return [['group', 'Group'], ...projTraits(pid).map(t => ['t:' + t, t]), ['origin', 'Origin'], ...(hasParents() ? [['mother', 'Mother']] : []), ['status', 'Alive / dead']];
+}
+function groupKey(x, by) {
+  if (by === 'group') return x.m.group || '';
+  if (by.startsWith('t:')) return traitsOf(x.m)[by.slice(2)] || '';
+  if (by === 'origin') return x.a.origin || '';
+  if (by === 'mother') return codeOf(x.a.motherId);
+  if (by === 'status') return statusOf(x.a);
+  return '';
+}
+function groupTitle(by, key) {
+  if (!key) return by === 'group' ? 'No group' : 'not set';
+  return by === 'group' ? `Group ${key}` : key;
+}
+// a group key inside the URL: "" (no group) is written as "_none_"
+const keyToUrl = k => encodeURIComponent(k === '' ? '_none_' : k);
+const urlToKey = u => { const k = decodeURIComponent(u); return k === '_none_' ? '' : k; };
+
+/* Colour marks → dot colours (English + German colour words) */
+const COLOUR_WORDS = {
+  red: '#d33a2c', rot: '#d33a2c', blue: '#2f6fd6', blau: '#2f6fd6', green: '#2e9e4f', 'grün': '#2e9e4f', gruen: '#2e9e4f',
+  yellow: '#f2c230', gelb: '#f2c230', orange: '#f08a24', pink: '#ec6fae', rosa: '#ec6fae',
+  purple: '#8a4fc4', lila: '#8a4fc4', violet: '#8a4fc4', violett: '#8a4fc4',
+  white: '#ffffff', 'weiß': '#ffffff', weiss: '#ffffff', black: '#1d1d1d', schwarz: '#1d1d1d',
+  brown: '#8a5a32', braun: '#8a5a32', grey: '#9a9a9a', gray: '#9a9a9a', grau: '#9a9a9a',
+  silver: '#c8ccd0', silber: '#c8ccd0', gold: '#d4a62a', turquoise: '#2bb3b1', 'türkis': '#2bb3b1', tuerkis: '#2bb3b1',
+};
+const colourTrait = pid => projTraits(pid).find(t => /colou?r|farb/i.test(t));
+function markColours(v) {
+  return String(v || '').toLowerCase().split(/[^a-zäöüß]+/).map(w => COLOUR_WORDS[w]).filter(Boolean).slice(0, 4);
+}
+function dotStyle(cols) {
+  if (!cols.length) return '';
+  if (cols.length === 1) return `background:${cols[0]}`;
+  const s = 100 / cols.length;
+  return `background:conic-gradient(${cols.map((c, i) => `${c} ${i * s}% ${(i + 1) * s}%`).join(',')})`;
+}
+
+function renderProject(pid, group = null) {
   const p = project(pid);
   if (!p) return go('#/');
-  if (ui.pid !== pid) ui = { pid, selecting: false, selected: new Set(), search: '' };
+  ensureFilter(p);
+  p.view = p.view || 'groups';
+  p.groupBy = groupByOptions(pid).some(o => o[0] === p.groupBy) ? p.groupBy : 'group';
+  if (ui.pid !== pid) ui = { pid, selecting: false, selected: new Set(), search: '', openGroup: null, keepSel: false };
+  if (ui.openGroup !== group) {
+    if (!ui.keepSel) { ui.selecting = false; ui.selected.clear(); }
+    ui.openGroup = group;
+  }
+  ui.keepSel = false;
+  const inGroup = group !== null;
 
   setTop({
-    back: '#/', title: p.name, actions: [
+    back: inGroup ? `#/p/${pid}` : '#/',
+    title: inGroup ? `${groupTitle(p.groupBy, group)} · ${p.name}` : p.name,
+    actions: [
       { icon: I.share, label: 'Export CSV', fn: () => exportDialog(pid) },
       { icon: I.more, label: 'Project menu', fn: () => projectMenu(pid) },
     ],
   });
   app().innerHTML = `
     <section class="wrap">
+      ${p.closedAt ? `<div class="notice"><span>Closed on <b>${esc(p.closedAt)}</b> – you can still edit and export.</span><button class="btn sm" id="reopenBtn">Reopen</button></div>` : ''}
       <div class="toolbar">
         <input type="search" id="search" placeholder="Search ID or colour mark…" value="${esc(ui.search)}" autocomplete="off">
         <button class="btn" id="filterBtn">${I.filter}<span>Filter</span><span class="badge" id="fbadge"></span></button>
       </div>
+      ${inGroup ? '' : `
+      <div class="viewbar">
+        <div class="seg">
+          <button type="button" data-v="groups" aria-pressed="${p.view === 'groups'}">Groups</button>
+          <button type="button" data-v="list" aria-pressed="${p.view === 'list'}">List</button>
+        </div>
+        ${p.view === 'groups' ? `<label class="by">by <select id="groupBy">${groupByOptions(pid).map(([v, l]) =>
+          `<option value="${esc(v)}" ${v === p.groupBy ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>` : ''}
+      </div>`}
       <div class="chips" id="chips"></div>
       <p class="summary" id="summary"></p>
-      <ul class="idlist" id="list"></ul>
-      <div id="emptyList"></div>
+      <div id="body"></div>
     </section>
     <div class="selbar" id="selbar"></div>
     <button class="fab" id="fab">${I.plus}<span>New ID</span></button>`;
 
   $('#search').oninput = e => { ui.search = e.target.value; renderList(pid); };
   $('#filterBtn').onclick = () => filterDialog(pid);
-  $('#fab').onclick = () => newIdDialog(pid);
+  if ($('#reopenBtn')) $('#reopenBtn').onclick = () => reopenProject(pid);
+  $('#fab').onclick = () => {
+    const by = p.groupBy, preset = {};
+    if (inGroup && by === 'group') preset.group = group;
+    if (inGroup && by.startsWith('t:')) preset.traits = { [by.slice(2)]: group };
+    newIdDialog(pid, preset);
+  };
+  app().querySelectorAll('[data-v]').forEach(b => b.onclick = () => { p.view = b.dataset.v; save(); renderProject(pid, group); });
+  if ($('#groupBy')) $('#groupBy').onchange = e => { p.groupBy = e.target.value; save(); renderList(pid); };
   renderList(pid);
 }
 
-/** IDs of a project after search + filters. Each item: { m: membership, a: animal, ev: events (newest first) } */
-function visibleMembers(pid, { ignoreFilters = false } = {}) {
+/** IDs of a project after search + filters (+ opened group). Each item: { m: membership, a: animal, ev: events (newest first) } */
+function visibleMembers(pid, { ignoreFilters = false, skipFilter = false } = {}) {
   const p = project(pid);
-  const filters = ignoreFilters ? [] : (p.filters || []);
+  ensureFilter(p);
   const q = ignoreFilters ? '' : ui.search.trim().toLowerCase();
+  const og = (!ignoreFilters && ui.pid === pid) ? ui.openGroup : null;
   const idx = eventIndex(pid);
   return membersOf(pid)
     .map(m => ({ m, a: animal(m.animalId), ev: idx[m.animalId] || [] }))
     .filter(x => x.a)
-    .filter(x => !q || x.a.code.toLowerCase().includes(q) || traitSummary(x.a).toLowerCase().includes(q))
-    .filter(x => filters.every(f => matchFilter(x, f)))
+    .filter(x => !q || x.a.code.toLowerCase().includes(q) || traitSummary(pid, x.m).toLowerCase().includes(q))
+    .filter(x => ignoreFilters || skipFilter || matchFilter(x, p.filter))
+    .filter(x => og === null || groupKey(x, p.groupBy) === og)
     .sort((x, y) => x.a.code.localeCompare(y.a.code, undefined, { numeric: true }));
 }
 
+/** Redraws filter chips, summary and the body (tiles or list). */
 function renderList(pid) {
   const p = project(pid);
-  const all = membersOf(pid);
+  if (!$('#body')) return;
   const rows = visibleMembers(pid);
+  const total = membersOf(pid).length;
   const alive = rows.filter(x => statusOf(x.a) === 'alive').length;
-  const filters = p.filters || [];
+  const fchips = filterChips(p);
+  const showGroups = p.view === 'groups' && ui.openGroup === null;
 
-  $('#fbadge').textContent = filters.length || '';
-  $('#chips').innerHTML = filters.map((f, i) => `<button class="chip" data-rm="${i}">${esc(filterLabel(f))} <b>×</b></button>`).join('');
-  $('#chips').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
-    p.filters.splice(+b.dataset.rm, 1); save(); renderList(pid);
+  $('#fbadge').textContent = fchips.length || '';
+  $('#chips').innerHTML = fchips.map((c, i) => `<button class="chip" data-rm="${i}">${esc(c.label)} <b>×</b></button>`).join('');
+  $('#chips').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { fchips[+b.dataset.rm].clear(); save(); renderList(pid); });
+
+  if (!total) {
+    $('#summary').textContent = '';
+    $('#body').innerHTML = `<div class="empty"><p><b>No IDs in this project yet.</b></p><p class="muted">Tap “New ID”.</p></div>`;
+    document.body.classList.remove('selecting');
+    return;
+  }
+  if (showGroups) renderGroups(pid, rows);
+  else renderRows(pid, rows);
+  const nGroups = showGroups ? new Set(rows.map(x => groupKey(x, p.groupBy))).size : 0;
+  const base = ui.openGroup !== null ? visibleMembers(pid, { skipFilter: true }).length : total;   // inside a group: IDs of that group
+  const what = rows.length === base ? `${rows.length} IDs` : `Showing ${rows.length} of ${base} IDs`;
+  $('#summary').textContent = `${what} · ${alive} alive${showGroups ? ` · ${nGroups} ${nGroups === 1 ? 'tile' : 'tiles'}` : ''}`;
+}
+
+/* Tiles: one per group, one dot per ID */
+function renderGroups(pid, rows) {
+  const p = project(pid), by = p.groupBy;
+  document.body.classList.remove('selecting');
+  const ct = colourTrait(pid);
+  if (p.dots === 'colour' && !ct) p.dots = 'status';
+  const colourMode = p.dots === 'colour';
+
+  const buckets = new Map();
+  rows.forEach(x => { const k = groupKey(x, by); if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(x); });
+  const keys = [...buckets.keys()].sort((a, b) => (a === '') - (b === '') || a.localeCompare(b, undefined, { numeric: true }));
+
+  $('#body').innerHTML = `
+    <div class="legend">
+      ${colourMode ? '<span>dots = colour mark</span><span><i class="dot c dead" style="background:#ccc"></i> dead</span>'
+        : '<span><i class="dot alive"></i> alive</span><span><i class="dot dead"></i> dead</span>'}
+      ${ct ? `<button type="button" class="btn sm ghost" id="dotMode">${colourMode ? 'Show alive / dead' : 'Show colour marks'}</button>` : ''}
+    </div>
+    ${keys.length ? `<div class="dishes">${keys.map(k => {
+      const xs = buckets.get(k);
+      const al = xs.filter(x => statusOf(x.a) === 'alive').length;
+      const dots = xs.slice().sort((x, y) => (statusOf(x.a) === 'dead') - (statusOf(y.a) === 'dead')).map(x => {
+        const st = statusOf(x.a);
+        const cols = colourMode ? markColours(traitsOf(x.m)[ct]) : [];
+        const cls = colourMode ? `dot c ${st} ${cols.length ? '' : 'nocol'}` : `dot ${st}`;
+        return `<i class="${cls}" style="${dotStyle(cols)}" title="${esc(x.a.code)}"></i>`;
+      }).join('');
+      return `<button type="button" class="dish ${al ? '' : 'alldead'}" data-k="${esc(k)}">
+        <span class="dish-head"><span class="dish-title">${esc(groupTitle(by, k))}</span>
+        <span class="dish-count"><b>${al}</b>/${xs.length} alive</span></span>
+        <span class="dots">${dots}</span></button>`;
+    }).join('')}</div>` : `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>`}
+    <p class="hint" style="margin-top:12px">Tap a tile to open its list · hold a tile to select all its living IDs.</p>`;
+
+  if ($('#dotMode')) $('#dotMode').onclick = () => { p.dots = colourMode ? 'status' : 'colour'; save(); renderList(pid); };
+  $('#body').querySelectorAll('.dish').forEach(el => {
+    const k = el.dataset.k;
+    onPress(el,
+      () => go(`#/p/${pid}/g/${keyToUrl(k)}`),
+      () => {
+        const ids = buckets.get(k).filter(x => statusOf(x.a) === 'alive').map(x => x.a.id);
+        ui.selecting = ids.length > 0; ui.selected = new Set(ids); ui.keepSel = true;
+        go(`#/p/${pid}/g/${keyToUrl(k)}`);
+        toast(`${ids.length} living ID${ids.length === 1 ? '' : 's'} selected`);
+      });
   });
-  $('#summary').textContent = all.length
-    ? `${rows.length === all.length ? `${all.length} IDs` : `Showing ${rows.length} of ${all.length} IDs`} · ${alive} alive`
-    : '';
-  $('#emptyList').innerHTML = !all.length
-    ? `<div class="empty"><p><b>No IDs in this project yet.</b></p><p class="muted">Tap “New ID”. Tip: hold an ID to select several at once.</p></div>`
-    : (!rows.length ? `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>` : '');
+}
 
-  const list = $('#list');
-  list.innerHTML = rows.map(({ m, a, ev }) => {
-    const last = ev.find(e => e.kind !== 'trait');   // latest real status (property changes are shown separately)
-    const sub = [traitSummary(a), m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
-    return `<li class="idrow ${ui.selected.has(a.id) ? 'sel' : ''} ${statusOf(a)}" data-id="${a.id}">
-      <span class="check">${I.check}</span>
-      <span class="idmain"><span class="idcode">${esc(a.code)}</span><span class="idsub">${esc(sub)}</span></span>
-      <span class="pill ${statusOf(a)}">${statusOf(a)}</span></li>`;
-  }).join('');
+/* Plain list of IDs (with multi-select) */
+function renderRows(pid, rows) {
+  $('#body').innerHTML = rows.length
+    ? `<ul class="idlist" id="list">${rows.map(({ m, a, ev }) => {
+      const last = ev.find(e => e.kind !== 'trait');   // latest real status (property changes are shown separately)
+      const sub = [traitSummary(pid, m), m.group ? `Group ${m.group}` : '', last ? `${last.feature}${last.value ? ': ' + last.value : ''} (${last.date})` : 'no entries'].filter(Boolean).join(' · ');
+      return `<li class="idrow ${ui.selected.has(a.id) ? 'sel' : ''} ${statusOf(a)}" data-id="${a.id}">
+        <span class="check">${I.check}</span>
+        <span class="idmain"><span class="idcode">${esc(a.code)}</span><span class="idsub">${esc(sub)}</span></span>
+        <span class="pill ${statusOf(a)}">${statusOf(a)}</span></li>`;
+    }).join('')}</ul><p class="hint" style="margin-top:12px">Tip: hold an ID to select several.</p>`
+    : `<div class="empty"><p class="muted">No ID matches the search / filters.</p></div>`;
 
-  list.querySelectorAll('.idrow').forEach(li => {
+  $('#body').querySelectorAll('.idrow').forEach(li => {
     const id = li.dataset.id;
     onPress(li,
       () => { if (ui.selecting) toggleSel(pid, id); else go(`#/p/${pid}/a/${id}`); },
@@ -359,7 +545,7 @@ function renderList(pid) {
       const ids = [...ui.selected];
       menu(`Set for ${ids.length} ID${ids.length > 1 ? 's' : ''}`, [
         { label: 'Group', fn: () => setGroupDialog(pid, ids) },
-        ...db.traits.map(t => ({ label: t, sub: 'Property – shared by all projects', fn: () => setTraitDialog(pid, ids, t) })),
+        ...projTraits(pid).map(t => ({ label: t, sub: 'Property', fn: () => setTraitDialog(pid, ids, t) })),
       ]);
     }
   });
@@ -390,10 +576,10 @@ function renderAnimal(pid, aid) {
       <div class="hero"><span class="pill ${st}">${st}${a.deathOn ? ' since ' + esc(a.deathOn) : ''}</span>${m && m.group ? `<span class="tag">Group ${esc(m.group)}</span>` : ''}</div>
       <dl class="facts">
         <dt>Group</dt><dd>${esc(m && m.group || '–')}</dd>
-        ${db.traits.map(t => `<dt>${esc(t)}</dt><dd>${esc(traitsOf(a)[t] || '–')}</dd>`).join('')}
+        ${m ? projTraits(pid).map(t => `<dt>${esc(t)}</dt><dd>${esc(traitsOf(m)[t] || '–')}</dd>`).join('') : ''}
         <dt>Origin</dt><dd>${esc(a.origin || '–')}</dd>
-        <dt>Mother</dt><dd>${link(a.motherId)}</dd>
-        <dt>Father</dt><dd>${link(a.fatherId)}</dd>
+        ${a.motherId ? `<dt>Mother</dt><dd>${link(a.motherId)}</dd>` : ''}
+        ${a.fatherId ? `<dt>Father</dt><dd>${link(a.fatherId)}</dd>` : ''}
         <dt>Collecting date</dt><dd>${fmtDate(a.collectedOn)}</dd>
         <dt>Assembling date</dt><dd>${fmtDate(m && m.assembledOn)}</dd>
         <dt>Death</dt><dd>${fmtDate(a.deathOn)}</dd>
@@ -413,7 +599,7 @@ function renderAnimal(pid, aid) {
 
   $('#editBtn').onclick = () => editAnimalDialog(pid, aid);
   if ($('#fab')) $('#fab').onclick = () => addStatusDialog(pid, [aid]);
-  if ($('#joinBtn')) $('#joinBtn').onclick = () => { joinProject(pid, aid); save(); render(); };
+  if ($('#joinBtn')) $('#joinBtn').onclick = () => joinWithPreview(pid, aid);
   app().querySelectorAll('[data-ev]').forEach(li => li.onclick = () => editEventDialog(pid, li.dataset.ev));
 }
 
@@ -429,7 +615,7 @@ function newProjectDialog() {
     onOk: fd => {
       const name = fd.get('name').trim();
       const now = new Date().toISOString();
-      const p = { id: uid(), name, features: DEFAULT_FEATURES.slice(), filters: [], createdAt: now, updatedAt: now };
+      const p = { id: uid(), name, features: DEFAULT_FEATURES.slice(), traits: DEFAULT_TRAITS.slice(), filter: emptyFilter(), view: 'groups', groupBy: 'group', createdAt: now, updatedAt: now };
       db.projects.push(p); save(); go(`#/p/${p.id}`);
     },
   });
@@ -438,9 +624,12 @@ function newProjectDialog() {
 function projectMenu(pid) {
   const p = project(pid);
   menu(p.name, [
-    { label: 'Add an existing ID', sub: 'An ID from another project – its shared data comes along', fn: () => addExistingDialog(pid) },
+    { label: 'Add an existing ID', sub: 'An ID from another project – you choose which properties to take over', fn: () => addExistingDialog(pid) },
     { label: 'Status types', sub: 'Suggestions shown when adding a status', fn: () => featuresDialog(pid) },
-    { label: 'Properties', sub: 'Lasting details like colour mark or sex (all projects)', fn: traitsDialog },
+    { label: 'Properties', sub: 'Lasting details like colour mark or sex (this project)', fn: () => traitsDialog(pid) },
+    p.closedAt
+      ? { label: 'Reopen project', sub: `Closed on ${p.closedAt} – moves back to the running projects`, fn: () => reopenProject(pid) }
+      : { label: 'Close project', sub: 'Moves it to “Closed” on the start screen – still editable', fn: () => closeProjectDialog(pid) },
     { label: 'Export CSV', sub: 'Share by mail, to Google Drive or download', fn: () => exportDialog(pid) },
     { label: 'Rename project', fn: () => modal({
       title: 'Rename project', body: `<label>Name<input name="name" required value="${esc(p.name)}"></label>`,
@@ -477,7 +666,7 @@ function featuresDialog(pid) {
 
 /* ----- IDs ----- */
 function joinProject(pid, aid, group = '', assembledOn = '') {
-  if (!membership(pid, aid)) db.members.push({ projectId: pid, animalId: aid, group, assembledOn });
+  if (!membership(pid, aid)) db.members.push({ projectId: pid, animalId: aid, group, assembledOn, joinedAt: new Date().toISOString() });
   touch(pid);
 }
 
@@ -493,29 +682,25 @@ function resolveParent(code) {
 function idFields(pid, d = {}) {
   return `
     <label>Group<input name="group" list="dl-groups" autocomplete="off" value="${esc(d.group || '')}"></label>
-    ${traitFields(d.traits || {})}
+    ${d.noTraits ? '' : traitFields(pid, d.traits || {})}
     <label>Origin (site / colony / lab line)<input name="origin" list="dl-origins" autocomplete="off" value="${esc(d.origin || '')}"></label>
-    <div class="row2">
-      <label>Mother ID<input name="mother" list="dl-codes" autocomplete="off" value="${esc(d.mother || '')}"></label>
-      <label>Father ID<input name="father" list="dl-codes" autocomplete="off" value="${esc(d.father || '')}"></label>
-    </div>
-    <p class="hint">Parents are their own IDs. If you type a parent ID that doesn't exist yet, it is created.</p>
     <div class="row2">
       <label>Collecting date<input type="date" name="collectedOn" value="${esc(d.collectedOn || '')}"></label>
       <label>Assembling date<input type="date" name="assembledOn" value="${esc(d.assembledOn || '')}"></label>
     </div>
-    ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}${datalist('dl-codes', allCodes())}`;
+    ${datalist('dl-groups', groupsOf(pid))}${datalist('dl-origins', origins())}`;
 }
 
 /** Inputs for all properties (name="trait-0", "trait-1" …) */
-function traitFields(values) {
-  if (!db.traits.length) return '';
-  return db.traits.map((t, i) => `
+function traitFields(pid, values) {
+  const list = projTraits(pid);
+  if (!list.length) return '';
+  return list.map((t, i) => `
     <label>${esc(t)}<input name="trait-${i}" list="dl-trait-${i}" autocomplete="off" value="${esc(values[t] || '')}"></label>
     ${datalist(`dl-trait-${i}`, traitValues(t))}`).join('');
 }
 /** Read the property inputs back: [[name, value], …] */
-const readTraits = fd => db.traits.map((t, i) => [t, (fd.get(`trait-${i}`) || '').trim()]);
+const readTraits = (pid, fd) => projTraits(pid).map((t, i) => [t, (fd.get(`trait-${i}`) || '').trim()]);
 
 /* ----- Automatic IDs -----
    4 characters from digits + capital letters, WITHOUT look-alikes
@@ -542,7 +727,7 @@ function autoCodes(n = 1, exclude = []) {
   return out;
 }
 
-function newIdDialog(pid) {
+function newIdDialog(pid, preset = {}) {
   let auto = autoCodes(1)[0];   // pre-filled suggestion
   modal({
     title: 'New ID', okText: 'Create',
@@ -556,7 +741,7 @@ function newIdDialog(pid) {
         <label>How many?<input name="count" type="number" min="1" max="500" value="1" inputmode="numeric"></label>
       </div>
       <p class="hint" id="codeHint"></p>
-      ${idFields(pid, { collectedOn: '', assembledOn: '' })}`,
+      ${idFields(pid, Object.assign({ collectedOn: '', assembledOn: '' }, preset))}`,
     onOpen: f => {
       const isAuto = () => { const c = f.code.value.trim(); return !c || c === auto; };
       const hint = () => {
@@ -568,7 +753,7 @@ function newIdDialog(pid) {
         else if (code) {
           const a = animalByCode(code);
           if (a && membership(pid, a.id)) t = '⚠ This ID is already in this project.';
-          else if (a) t = 'This ID exists in another project – it will be added here (properties, origin, parents, dates and death are shared).';
+          else if (a) t = 'This ID exists in another project – it will be added here, and you can choose which properties to take over.';
         }
         f.querySelector('#codeHint').textContent = t;
       };
@@ -583,24 +768,70 @@ function newIdDialog(pid) {
       const codes = useAuto
         ? (n > 1 ? [auto, ...autoCodes(n - 1, [auto])] : [auto])
         : (n > 1 ? seriesCodes(code, n) : [code]);
-      let created = 0, linked = 0, skipped = 0;
+      const group = fd.get('group').trim(), assembledOn = fd.get('assembledOn');
+      const entered = Object.fromEntries(readTraits(pid, fd).filter(([, v]) => v));
+      let created = 0, skipped = 0;
+      const linked = [];
       codes.forEach(c => {
         let a = animalByCode(c);
         if (a && membership(pid, a.id)) { skipped++; return; }
-        if (a) linked++;
-        else { a = { id: uid(), code: c, createdAt: new Date().toISOString() }; db.animals.push(a); created++; }
+        if (!a) { a = { id: uid(), code: c, createdAt: new Date().toISOString() }; db.animals.push(a); created++; }
+        else linked.push(a);
         // shared fields: only fill what is still empty for existing IDs
         a.origin = a.origin || fd.get('origin').trim();
         a.collectedOn = a.collectedOn || fd.get('collectedOn');
-        if (!a.motherId) a.motherId = resolveParent(fd.get('mother'));
-        if (!a.fatherId) a.fatherId = resolveParent(fd.get('father'));
-        joinProject(pid, a.id, fd.get('group').trim(), fd.get('assembledOn'));
-        readTraits(fd).forEach(([t, v]) => { if (v && !traitsOf(a)[t]) setTrait(a.id, t, v); });
+        if (linked.includes(a)) return;            // existing IDs: properties via take-over below
+        joinProject(pid, a.id, group, assembledOn);
+        Object.entries(entered).forEach(([t, v]) => setTrait(pid, a.id, t, v));
       });
+      // IDs from other projects: one → preview with checkboxes, several → take over everything
+      linked.forEach(a => { if (linked.length > 1) joinWithPreview(pid, a.id, { group, assembledOn, entered, auto: true }); });
       save(); render();
-      toast([created && `${created} created`, linked && `${linked} added from other projects`, skipped && `${skipped} already here`].filter(Boolean).join(', '));
-      if (skipped && !created && !linked) return false;
+      const msg = [created && `${created} created`, linked.length > 1 && `${linked.length} added from other projects (properties taken over)`, skipped && `${skipped} already here`].filter(Boolean).join(', ');
+      if (msg) toast(msg);
+      if (linked.length === 1) setTimeout(() => joinWithPreview(pid, linked[0].id, { group, assembledOn, entered }));
+      if (skipped && !created && !linked.length) return false;
     },
+  });
+}
+
+/** The other project an ID was in most recently (newest entry there, or when it joined). */
+function latestOtherMembership(pid, aid) {
+  const last = m => [m.joinedAt || '', (project(m.projectId) || {}).createdAt || '',
+    ...db.events.filter(e => e.projectId === m.projectId && e.animalId === aid).map(e => e.createdAt || '')].sort().pop();
+  return db.members.filter(m => m.animalId === aid && m.projectId !== pid && project(m.projectId))
+    .sort((x, y) => last(y).localeCompare(last(x)))[0] || null;
+}
+
+/**
+ * Add an existing ID to a project and take over its properties from its latest other project.
+ * Shows a preview with checkboxes (unless auto). Values typed in "New ID" (entered) win.
+ * Each taken-over property gets a history entry "taken over from <project>".
+ */
+function joinWithPreview(pid, aid, { group = '', assembledOn = '', entered = {}, auto = false } = {}) {
+  const a = animal(aid), src = latestOtherMembership(pid, aid);
+  const srcName = src ? project(src.projectId).name : '';
+  const srcTraits = traitsOf(src);
+  const list = projTraits(pid);
+  const rows = uniq([...Object.keys(srcTraits).filter(t => srcTraits[t]), ...Object.keys(entered)])
+    .map(t => ({ t, v: entered[t] || srcTraits[t], entered: !!entered[t], isNew: !list.some(x => same(x, t)) }));
+
+  const finish = chosen => {
+    joinProject(pid, aid, group, assembledOn);
+    chosen.forEach(r => setTrait(pid, aid, addTrait(pid, r.t), r.v, todayStr(), r.entered ? 'set' : `taken over from ${srcName}`));
+    touch(pid); save();
+    if (!auto) { render(); toast(`${a.code} added${chosen.length ? ` · ${chosen.length} propert${chosen.length === 1 ? 'y' : 'ies'}` : ''}`); }
+  };
+  if (auto || !rows.length) return finish(rows);
+
+  modal({
+    title: `Add ${a.code} to ${project(pid).name}`, okText: 'Add',
+    body: `<p style="margin:0">Take over these properties${src ? ` from <b>${esc(srcName)}</b>` : ''}:</p>
+      <div class="takeover">${rows.map((r, i) => `
+        <label class="check-line"><input type="checkbox" name="r${i}" checked>
+          <span><b>${esc(r.t)}:</b> ${esc(r.v)}${r.entered ? ' <small class="muted">(entered now)</small>' : ''}${r.isNew ? ' <small class="muted">(new in this project)</small>' : ''}</span></label>`).join('')}</div>
+      <p class="hint">Untick what should not be taken over. Afterwards the projects are independent: changes here do not change ${esc(srcName || 'the other project')}.</p>`,
+    onOk: fd => finish(rows.filter((r, i) => fd.get('r' + i))),
   });
 }
 
@@ -621,40 +852,37 @@ function addExistingDialog(pid) {
     onOk: fd => {
       const a = animalByCode(fd.get('code'));
       if (!a) { toast('Unknown ID'); return false; }
-      joinProject(pid, a.id, fd.get('group').trim()); save(); render(); toast(`${a.code} added`);
+      const group = fd.get('group').trim();
+      setTimeout(() => joinWithPreview(pid, a.id, { group }));
     },
   });
 }
 
 function editAnimalDialog(pid, aid) {
-  const a = animal(aid), m = membership(pid, aid) || {};
+  const a = animal(aid), mem = membership(pid, aid), m = mem || {};
   modal({
     title: `Edit ${a.code}`,
-    body: `${idFields(pid, { group: m.group, origin: a.origin, mother: codeOf(a.motherId), father: codeOf(a.fatherId), collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
+    body: `${idFields(pid, { group: m.group, traits: traitsOf(mem), noTraits: !mem, origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
-      <fieldset><legend>Add a new property</legend>
+      ${mem ? `<fieldset><legend>Add a new property</legend>
         <div class="row2">
           <label>Name<input name="newTrait" autocomplete="off" placeholder="e.g. morph"></label>
           <label>Value<input name="newTraitValue" autocomplete="off"></label>
         </div>
       </fieldset>
-      <label>Date of property changes<input type="date" name="traitDate" value="${todayStr()}"></label>
-      <p class="hint">Group and assembling date belong to this project. Everything else is shared by all projects of this ID. Property changes are also written into the status history.</p>`,
+      <label>Date of property changes<input type="date" name="traitDate" value="${todayStr()}"></label>` : ''}
+      <p class="hint">Group, assembling date and properties belong to this project. Origin, collecting date and death are shared by all projects of this ID. Property changes are written into this project's history.</p>`,
     onOk: fd => {
-      const mother = fd.get('mother').trim(), father = fd.get('father').trim();
-      if (same(mother, a.code) || same(father, a.code)) { toast('An ID cannot be its own parent'); return false; }
       a.origin = fd.get('origin').trim();
-      a.motherId = resolveParent(mother);
-      a.fatherId = resolveParent(father);
       a.collectedOn = fd.get('collectedOn');
       a.deathOn = fd.get('deathOn');
-      const tDate = fd.get('traitDate') || todayStr();
-      readTraits(fd).forEach(([t, v]) => setTrait(aid, t, v, tDate));
-      const nt = fd.get('newTrait').trim();
-      if (nt) setTrait(aid, addTrait(nt), fd.get('newTraitValue'), tDate);
-      if (membership(pid, aid)) {
-        m.group = fd.get('group').trim();
-        m.assembledOn = fd.get('assembledOn');
+      if (mem) {
+        const tDate = fd.get('traitDate') || todayStr();
+        readTraits(pid, fd).forEach(([t, v]) => setTrait(pid, aid, t, v, tDate));
+        const nt = fd.get('newTrait').trim();
+        if (nt) setTrait(pid, aid, addTrait(pid, nt), fd.get('newTraitValue'), tDate);
+        mem.group = fd.get('group').trim();
+        mem.assembledOn = fd.get('assembledOn');
       }
       touch(pid); cleanupOrphans(); save(); render(); toast('Saved');
     },
@@ -709,43 +937,47 @@ function setTraitDialog(pid, aids, t) {
       <p class="hint">Empty value removes the property.</p>${datalist('dl-tv', traitValues(t))}`,
     onOk: fd => {
       let n = 0;
-      aids.forEach(id => { if (setTrait(id, t, fd.get('v'), fd.get('date'))) n++; });
+      aids.forEach(id => { if (setTrait(pid, id, t, fd.get('v'), fd.get('date'))) n++; });
       touch(pid); save(); ui.selecting = false; ui.selected.clear(); render(); toast(`${t} changed for ${n} ID${n === 1 ? '' : 's'}`);
     },
   });
 }
 
-/** Manage the list of properties (shared by all projects). */
-function traitsDialog() {
+/** Manage the list of properties of ONE project. */
+function traitsDialog(pid) {
+  const p = project(pid), list = projTraits(pid);
+  const ms = () => membersOf(pid);
   modal({
-    title: 'Properties', okText: 'Add',
-    body: `<p class="muted" style="margin:0">Lasting details of an animal, e.g. colour mark or sex. They belong to the animal (same in all projects), always show the current value, and every change is logged in the history.</p>
-      <div>${db.traits.map((t, i) => `<div class="frow"><span>${esc(t)}</span><span>
+    title: `Properties · ${p.name}`, okText: 'Add',
+    body: `<p class="muted" style="margin:0">Lasting details of an animal in this project, e.g. colour mark or sex. They always show the current value, and every change is logged in the history. Other projects have their own properties.</p>
+      <div>${list.map((t, i) => `<div class="frow"><span>${esc(t)}</span><span>
         <button type="button" class="btn sm ghost" data-ren="${i}">Rename</button>
         <button type="button" class="btn sm ghost" data-rm="${i}">Remove</button></span></div>`).join('') || '<p class="muted">No properties yet.</p>'}</div>
       <label>New property<input name="t" autocomplete="off" placeholder="e.g. morph"></label>`,
     onOpen: f => {
       f.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => {
-        const t = db.traits[+b.dataset.rm];
-        confirmBox(`Remove “${t}”?`, `The current “${esc(t)}” values of all IDs are removed. Entries already in the history stay.`, 'Remove', () => {
-          db.traits = db.traits.filter(x => x !== t);
-          db.animals.forEach(a => { if (a.traits) delete a.traits[t]; });
-          db.projects.forEach(p => p.filters = (p.filters || []).filter(x => !(x.type === 'trait' && x.feature === t)));
-          save(); render(); traitsDialog();
+        const t = list[+b.dataset.rm];
+        confirmBox(`Remove “${t}”?`, `The current “${esc(t)}” values of the IDs in this project are removed. Entries already in the history stay.`, 'Remove', () => {
+          p.traits = list.filter(x => x !== t);
+          ms().forEach(m => { if (m.traits) delete m.traits[t]; });
+          ensureFilter(p); delete p.filter.traits[t]; if (p.groupBy === 't:' + t) p.groupBy = 'group';
+          save(); render(); traitsDialog(pid);
         });
       });
       f.querySelectorAll('[data-ren]').forEach(b => b.onclick = () => {
-        const old = db.traits[+b.dataset.ren];
+        const old = list[+b.dataset.ren];
         modal({
           title: 'Rename property', body: `<label>Name<input name="n" required value="${esc(old)}"></label>`,
           onOk: fd => {
             const n = fd.get('n').trim();
-            if (db.traits.some(x => x !== old && same(x, n))) { toast('This property already exists'); return false; }
-            db.traits[db.traits.indexOf(old)] = n;
-            db.animals.forEach(a => { if (a.traits && old in a.traits) { a.traits[n] = a.traits[old]; delete a.traits[old]; } });
-            db.events.forEach(e => { if (e.kind === 'trait' && e.feature === old) e.feature = n; });
-            db.projects.forEach(p => (p.filters || []).forEach(x => { if (x.type === 'trait' && x.feature === old) x.feature = n; }));
-            save(); render(); setTimeout(traitsDialog);
+            if (list.some(x => x !== old && same(x, n))) { toast('This property already exists'); return false; }
+            list[list.indexOf(old)] = n;
+            ms().forEach(m => { if (m.traits && old in m.traits) { m.traits[n] = m.traits[old]; delete m.traits[old]; } });
+            db.events.forEach(e => { if (e.projectId === pid && e.kind === 'trait' && e.feature === old) e.feature = n; });
+            ensureFilter(p);
+            if (p.filter.traits[old]) { p.filter.traits[n] = p.filter.traits[old]; delete p.filter.traits[old]; }
+            if (p.groupBy === 't:' + old) p.groupBy = 't:' + n;
+            save(); render(); setTimeout(() => traitsDialog(pid));
           },
         });
       });
@@ -753,9 +985,30 @@ function traitsDialog() {
     onOk: fd => {
       const v = fd.get('t').trim();
       if (!v) return true;
-      addTrait(v); save(); render(); traitsDialog(); return false;
+      addTrait(pid, v); save(); render(); traitsDialog(pid); return false;
     },
   });
+}
+
+/* ----- Close / reopen a project (only a mark on the start screen, nothing is locked) ----- */
+function closeProjectDialog(pid) {
+  const p = project(pid);
+  modal({
+    title: 'Close project?', okText: 'Close project',
+    body: `<p style="margin:0">“${esc(p.name)}” moves to <b>Closed</b> on the start screen. You can still open, edit and export it, and reopen it at any time.</p>
+      <label>Closing date<input type="date" name="d" required value="${todayStr()}"></label>`,
+    onOk: fd => {
+      p.closedAt = fd.get('d');
+      (p.closeLog = p.closeLog || []).push({ closed: p.closedAt });
+      save(); go('#/'); toast('Project closed');
+    },
+  });
+}
+function reopenProject(pid) {
+  const p = project(pid);
+  (p.closeLog = p.closeLog || []).push({ reopened: todayStr() });
+  p.closedAt = null;
+  touch(pid); save(); render(); toast('Project reopened');
 }
 
 /* ----- Status entries ----- */
@@ -831,85 +1084,108 @@ function editEventDialog(pid, evId) {
   });
 }
 
-/* ----- Filters ----- */
-const FILTER_TYPES = {
-  group: 'Group is', status: 'Alive / dead', has: 'Has status', hasnot: 'Does NOT have status',
-  last: 'Latest value of status is', trait: 'Property is', mother: 'Mother is', father: 'Father is', origin: 'Origin contains',
-};
-function filterLabel(f) {
-  switch (f.type) {
-    case 'group': return `Group = ${f.value}`;
-    case 'status': return f.value;
-    case 'has': return `has ${f.feature}`;
-    case 'hasnot': return `no ${f.feature}`;
-    case 'last': return `${f.feature} = ${f.value}`;
-    case 'trait': return f.value ? `${f.feature}: ${f.value}` : `no ${f.feature}`;
-    case 'mother': return `mother ${f.value}`;
-    case 'father': return `father ${f.value}`;
-    case 'origin': return `origin ∋ ${f.value}`;
-  }
-  return '?';
+/* ----- Filters -----
+   project.filter = { status:[], group:[], origin:[], mother:[], traits:{name:[values]}, has:[], missing:[] }
+   Inside one row: ANY of the chosen values (OR). Between rows: ALL must match (AND).
+   "" stands for "not set". */
+const emptyFilter = () => ({ status: [], group: [], origin: [], mother: [], traits: {}, has: [], missing: [] });
+
+/** Makes sure a project has the new filter format (converts filters of older versions). */
+function ensureFilter(p) {
+  if (p.filter) return;
+  const f = emptyFilter();
+  (p.filters || []).forEach(o => {
+    if (o.type === 'status') f.status.push(o.value);
+    if (o.type === 'group') f.group.push(o.value);
+    if (o.type === 'origin') f.origin.push(o.value);
+    if (o.type === 'mother') f.mother.push(o.value);
+    if (o.type === 'trait') (f.traits[o.feature] = f.traits[o.feature] || []).push(o.value);
+    if (o.type === 'has') f.has.push(o.feature);
+    if (o.type === 'hasnot') f.missing.push(o.feature);
+  });
+  p.filter = f;
+  delete p.filters;
 }
+
+const inList = (list, v) => !list || !list.length || list.some(x => same(x, v));
+const hasStatus = (ev, f) => ev.some(e => e.kind !== 'trait' && same(e.feature, f));
 function matchFilter({ a, m, ev }, f) {
-  switch (f.type) {
-    case 'group': return same(m.group, f.value);
-    case 'status': return statusOf(a) === f.value;
-    case 'has': return ev.some(e => same(e.feature, f.feature));
-    case 'hasnot': return !ev.some(e => same(e.feature, f.feature));
-    case 'last': { const e = ev.find(x => same(x.feature, f.feature)); return !!e && same(e.value, f.value); }
-    case 'trait': return same(traitsOf(a)[f.feature], f.value);
-    case 'mother': return same(codeOf(a.motherId), f.value);
-    case 'father': return same(codeOf(a.fatherId), f.value);
-    case 'origin': return String(a.origin || '').toLowerCase().includes(String(f.value).toLowerCase());
-  }
-  return true;
+  return inList(f.status, statusOf(a)) && inList(f.group, m.group || '') && inList(f.origin, a.origin || '')
+    && inList(f.mother, codeOf(a.motherId))
+    && Object.entries(f.traits).every(([t, vals]) => inList(vals, traitsOf(m)[t] || ''))
+    && f.has.every(h => hasStatus(ev, h)) && f.missing.every(h => !hasStatus(ev, h));
+}
+
+/** Active filters as removable chips: [{ label, clear() }] */
+function filterChips(p) {
+  const f = p.filter, out = [];
+  const show = v => v === '' ? 'not set' : v;
+  const add = (label, list, clear) => { if (list.length) out.push({ label: `${label}: ${list.map(show).join(', ')}`, clear }); };
+  if (f.status.length) out.push({ label: f.status.join(' / '), clear: () => f.status = [] });
+  add('Group', f.group, () => f.group = []);
+  Object.entries(f.traits).forEach(([t, vals]) => add(t, vals, () => delete f.traits[t]));
+  add('Origin', f.origin, () => f.origin = []);
+  add('Mother', f.mother, () => f.mother = []);
+  f.has.forEach(h => out.push({ label: `has ${h}`, clear: () => f.has = f.has.filter(x => x !== h) }));
+  f.missing.forEach(h => out.push({ label: `no ${h}`, clear: () => f.missing = f.missing.filter(x => x !== h) }));
+  return out;
 }
 
 function filterDialog(pid) {
   const p = project(pid);
-  p.filters = p.filters || [];
+  ensureFilter(p);
+  const draft = JSON.parse(JSON.stringify(p.filter));
+  const idx = eventIndex(pid);
+  const all = membersOf(pid).map(m => ({ m, a: animal(m.animalId), ev: idx[m.animalId] || [] })).filter(x => x.a);
+  const scope = visibleMembers(pid, { skipFilter: true });   // what the count refers to: opened group + search
+  const inGroup = ui.pid === pid && ui.openGroup !== null;
+
+  // one section per thing you can filter by; options = values that actually occur
+  const valuesOf = fn => {
+    const vals = sortNat(uniq(all.map(fn)));
+    const empty = all.some(x => !String(fn(x) || '').trim());
+    return [...vals.map(v => [v, v]), ...(vals.length && empty ? [['', '— not set']] : [])];
+  };
+  const feats = sortNat(uniq(all.flatMap(x => x.ev.filter(e => e.kind !== 'trait').map(e => e.feature)))).filter(f => !isDeathFeature(f));
+  const sections = [
+    { title: 'Alive / dead', path: ['status'], opts: [['alive', 'alive'], ['dead', 'dead']] },
+    { title: 'Group', path: ['group'], opts: valuesOf(x => x.m.group) },
+    ...projTraits(pid).map(t => ({ title: t, path: ['traits', t], opts: valuesOf(x => traitsOf(x.m)[t]) })),
+    { title: 'Origin', path: ['origin'], opts: valuesOf(x => x.a.origin) },
+    { title: 'Mother', path: ['mother'], opts: valuesOf(x => codeOf(x.a.motherId)) },
+    { title: 'Has status', path: ['has'], opts: feats.map(f => [f, f]) },
+    { title: 'Missing status', path: ['missing'], opts: feats.map(f => [f, 'no ' + f]) },
+  ].filter(s => s.opts.length && s.opts.length <= 60);
+
+  const listOf = path => path[0] === 'traits' ? (draft.traits[path[1]] = draft.traits[path[1]] || []) : draft[path[0]];
+  const isOn = (s, v) => listOf(s.path).some(x => same(x, v));
+
   modal({
-    title: 'Filters', okText: 'Apply',
+    title: 'Filter', okText: 'Show',
     body: `
-      <p class="muted" style="margin:0">All filters must match (AND). Filters are remembered per project.</p>
-      <div>${p.filters.map((f, i) => `<div class="frow"><span>${esc(filterLabel(f))}</span><button type="button" class="btn sm ghost" data-rm="${i}">Remove</button></div>`).join('') || '<p class="muted">No filters active.</p>'}</div>
-      <fieldset>
-        <legend>Add a filter</legend>
-        <label>Type<select name="type">${Object.entries(FILTER_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></label>
-        <label data-show="has hasnot last">Status<input name="feature" list="dl-features" autocomplete="off"></label>
-        <label data-show="trait">Property<select name="trait">${db.traits.map(t => `<option>${esc(t)}</option>`).join('')}</select></label>
-        <label data-show="group last trait mother father origin">Value<input name="value" list="dl-fv" autocomplete="off"></label>
-        <p class="hint" data-show="trait">Leave the value empty to find IDs where it is not set yet.</p>
-        <label data-show="status">Show<select name="st"><option value="alive">alive</option><option value="dead">dead</option></select></label>
-      </fieldset>
-      ${p.filters.length ? '<button type="button" class="btn ghost" id="clearF">Clear all filters</button>' : ''}
-      ${datalist('dl-features', uniq([...p.features, ...db.events.filter(e => e.projectId === pid).map(e => e.feature)]))}<datalist id="dl-fv"></datalist>`,
+      <p class="hint" style="margin:0">Tap to choose. Several in one row = any of them · different rows = all must match.${inGroup ? `<br>Counting inside <b>${esc(groupTitle(p.groupBy, ui.openGroup))}</b> (${scope.length} IDs).` : ''}</p>
+      ${sections.map((s, si) => `<div class="fsec"><div class="fsec-t">${esc(s.title)}</div><div class="chips">${s.opts.map(([v, l], oi) =>
+        `<button type="button" class="chip toggle" data-s="${si}" data-o="${oi}" aria-pressed="${isOn(s, v)}">${esc(l)}</button>`).join('')}</div></div>`).join('')}
+      <button type="button" class="btn ghost" id="clearF">Clear all filters</button>`,
     onOpen: f => {
-      const sync = () => {
-        const t = f.type.value;
-        f.querySelectorAll('[data-show]').forEach(l => l.hidden = !l.dataset.show.split(' ').includes(t));
-        const vals = t === 'group' ? groupsOf(pid)
-          : (t === 'mother' || t === 'father') ? allCodes()
-          : t === 'origin' ? origins()
-          : t === 'last' ? valuesFor(pid, f.feature.value)
-          : t === 'trait' ? traitValues(f.trait.value) : [];
-        f.querySelector('#dl-fv').innerHTML = vals.map(v => `<option value="${esc(v)}">`).join('');
+      const ok = f.querySelector('button[type=submit]');
+      const update = () => {
+        f.querySelectorAll('.chip.toggle').forEach(b => { const s = sections[b.dataset.s]; b.setAttribute('aria-pressed', isOn(s, s.opts[b.dataset.o][0])); });
+        const n = scope.filter(x => matchFilter(x, draft)).length;
+        ok.textContent = `Show ${n} ID${n === 1 ? '' : 's'}`;
       };
-      f.type.onchange = sync; f.feature.oninput = sync; f.trait.onchange = sync; sync();
-      f.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { p.filters.splice(+b.dataset.rm, 1); save(); renderList(pid); filterDialog(pid); });
-      const c = f.querySelector('#clearF');
-      if (c) c.onclick = () => { p.filters = []; save(); renderList(pid); closeModal(); };
+      f.querySelectorAll('.chip.toggle').forEach(b => b.onclick = () => {
+        const s = sections[b.dataset.s], v = s.opts[b.dataset.o][0], list = listOf(s.path);
+        const i = list.findIndex(x => same(x, v));
+        i >= 0 ? list.splice(i, 1) : list.push(v);
+        update();
+      });
+      f.querySelector('#clearF').onclick = () => { Object.assign(draft, emptyFilter()); update(); };
+      update();
     },
-    onOk: fd => {
-      const t = fd.get('type'), feature = fd.get('feature').trim(), value = fd.get('value').trim();
-      let nf = null;
-      if (t === 'status') nf = { type: t, value: fd.get('st') };
-      else if (['has', 'hasnot'].includes(t) && feature) nf = { type: t, feature };
-      else if (t === 'last' && feature && value) nf = { type: t, feature, value };
-      else if (t === 'trait' && fd.get('trait')) nf = { type: t, feature: fd.get('trait'), value };
-      else if (['group', 'mother', 'father', 'origin'].includes(t) && value) nf = { type: t, value };
-      if (nf) { p.filters.push(nf); save(); }
-      renderList(pid);
+    onOk: () => {
+      Object.keys(draft.traits).forEach(t => { if (!draft.traits[t].length) delete draft.traits[t]; });
+      p.filter = draft; save(); renderList(pid);
     },
   });
 }
@@ -924,17 +1200,15 @@ function settingsDialog() {
           <option value="," ${settings.sep === ',' ? 'selected' : ''}>Comma ( , ) – R, Python, Google Sheets</option>
           <option value=";" ${settings.sep === ';' ? 'selected' : ''}>Semicolon ( ; ) – German Excel</option>
         </select></label>
-      <button type="button" class="btn" id="traitsBtn">Properties (colour mark, sex …)</button>
       <fieldset><legend>Backup</legend>
         <p class="muted" style="margin:0">All data is stored only in this browser on this device. Make regular backups – e.g. share them to your Google Drive.
         <br>Last backup: <b>${settings.lastBackup ? settings.lastBackup.slice(0, 10) : 'never'}</b></p>
-        <button type="button" class="btn primary" id="bk">Back up everything (.json)</button>
-        <label class="btn" style="color:var(--ink)">Restore from backup…<input type="file" id="rs" accept=".json,application/json" hidden></label>
+        <button type="button" class="btn primary" id="bk">Back up everything</button>
+        <label class="btn" style="color:var(--ink)">Restore from backup…<input type="file" id="rs" accept=".json,.txt,application/json,text/plain" hidden></label>
       </fieldset>
-      <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries</p>`,
+      <p class="hint">${db.projects.length} projects · ${db.animals.length} IDs · ${db.events.length} entries · app version ${APP_VERSION}</p>`,
     onOpen: f => {
       f.querySelector('#bk').onclick = backupNow;
-      f.querySelector('#traitsBtn').onclick = traitsDialog;
       f.querySelector('#rs').onchange = e => restoreFrom(e.target.files[0]);
     },
     onOk: fd => { settings.sep = fd.get('sep'); saveSettings(); toast('Saved'); },
@@ -967,10 +1241,11 @@ function buildCsvFiles(pid, onlyVisible) {
   // properties get their own columns (current value), so their history entries get no extra columns here
   const feats = sortNat(uniq(rows.flatMap(r => r.ev.filter(e => e.kind !== 'trait').map(e => e.feature)))).filter(f => !isDeathFeature(f));
 
-  const head = ['id', 'group', 'status', ...db.traits.map(colName), 'collecting_date', 'assembling_date', 'death_date', 'origin', 'mother', 'father', 'n_entries'];
+  const par = rows.some(r => r.a.motherId || r.a.fatherId);   // mother/father columns only if used
+  const head = ['id', 'group', 'status', ...projTraits(pid).map(colName), 'collecting_date', 'assembling_date', 'death_date', 'origin', ...(par ? ['mother', 'father'] : []), 'n_entries'];
   feats.forEach(f => { const c = colName(f); head.push(`${c}_last_value`, `${c}_last_date`, `${c}_n`); });
   const wide = [head, ...rows.map(({ a, m, ev }) => {
-    const r = [a.code, m.group, statusOf(a), ...db.traits.map(t => traitsOf(a)[t] || ''), a.collectedOn, m.assembledOn, a.deathOn, a.origin, codeOf(a.motherId), codeOf(a.fatherId), ev.length];
+    const r = [a.code, m.group, statusOf(a), ...projTraits(pid).map(t => traitsOf(m)[t] || ''), a.collectedOn, m.assembledOn, a.deathOn, a.origin, ...(par ? [codeOf(a.motherId), codeOf(a.fatherId)] : []), ev.length];
     feats.forEach(f => {
       const fe = ev.filter(e => e.kind !== 'trait' && same(e.feature, f));
       r.push(fe[0] ? fe[0].value : '', fe[0] ? fe[0].date : '', fe.length);
@@ -999,12 +1274,13 @@ function download(file) {
 
 /** Opens the phone's share sheet (Gmail, Drive, …). Falls back to download on computers. */
 async function shareFiles(files, title) {
+  let why = !navigator.share ? 'browser cannot share' : 'browser cannot share this file type';
   if (navigator.canShare && navigator.canShare({ files })) {
     try { await navigator.share({ files, title }); return true; }
-    catch (e) { if (e.name === 'AbortError') return false; }
+    catch (e) { if (e.name === 'AbortError') return false; why = e.name; }
   }
   files.forEach(download);
-  toast('Downloaded – attach to a mail or upload to Drive');
+  toast(`Downloaded (${why}) – find it in “Downloads”`);
   return true;
 }
 
@@ -1030,7 +1306,13 @@ function exportDialog(pid) {
 }
 
 async function backupNow() {
-  const file = new File([JSON.stringify(db, null, 1)], `moetervlog-backup_${todayStr()}.json`, { type: 'application/json' });
+  const data = JSON.stringify(db, null, 1), name = `moetervlog-backup_${todayStr()}`;
+  // Sharing: always as .txt. Chrome on Android refuses .json files when sharing (NotAllowedError),
+  // even though it first says it could share them. The content is the same JSON text;
+  // "Restore from backup" accepts .txt and .json. Only if sharing is impossible → download as .json.
+  const txt = new File([data], `${name}.txt`, { type: 'text/plain' });
+  const json = new File([data], `${name}.json`, { type: 'application/json' });
+  const file = (navigator.canShare && navigator.canShare({ files: [txt] })) ? txt : json;
   if (await shareFiles([file], 'Moetervlog backup')) {
     settings.lastBackup = new Date().toISOString(); saveSettings();
     closeModal(); render();
@@ -1045,7 +1327,7 @@ function restoreFrom(file) {
     if (!d || !Array.isArray(d.projects) || !Array.isArray(d.animals)) return toast('This is not a Moetervlog backup');
     confirmBox('Restore backup?',
       `This REPLACES everything on this device with the backup (${d.projects.length} projects, ${d.animals.length} IDs, ${(d.events || []).length} entries).`,
-      'Replace', () => { db = Object.assign(emptyDb(), d); save(); go('#/'); render(); toast('Backup restored'); });
+      'Replace', () => { db = Object.assign(emptyDb(), d); migrateData(); save(); go('#/'); render(); toast('Backup restored'); });
   });
 }
 
@@ -1060,10 +1342,12 @@ function render() {
   if (h !== lastHash) { window.scrollTo(0, 0); lastHash = h; }
   const [, p, pid, a, aid] = h.slice(1).split('/');   // "#/p/<pid>/a/<aid>"
   if (p === 'p' && pid && a === 'a' && aid) renderAnimal(pid, aid);
+  else if (p === 'p' && pid && a === 'g' && aid !== undefined) renderProject(pid, urlToKey(aid));
   else if (p === 'p' && pid) renderProject(pid);
   else renderProjects();
 }
 
+migrateData();   // one-time update of data from older versions (properties → per project)
 window.addEventListener('hashchange', () => { closeModal(); render(); });
 render();
 

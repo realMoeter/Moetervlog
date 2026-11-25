@@ -56,29 +56,42 @@ Done – the app now opens from the home screen, also in the lab without Wi-Fi.
 ## 4. How the app works
 
 - **Start screen** = your experiments (projects). ⋮ top right = settings & backup.
-- **Project** = list of IDs. Search field, **Filter** button (several filters at once, they are remembered), export button (↑).
-- **New ID**: ID, group, origin, mother, father, collecting date, assembling date.
+  Finished projects: project menu ⋮ → **Close project** (with date). They move to *Closed* at the bottom, greyed out.
+  Nothing is locked – you can still open, edit and export them; **Reopen** moves them back.
+- **Project** opens in the **group view**: one tile per group (like the petri dishes on the shelf), one dot per ID –
+  filled green = alive, red ring = dead, plus "4/5 alive". *by …* groups the tiles by group, a property (colour mark, sex …),
+  origin or alive/dead. **Show colour marks** colours the dots by the colour mark (e.g. "red-blue" → two-coloured dot,
+  English or German colour words; dead = red cross).
+  Tap a tile → list of that group. **Hold a tile** → all its living IDs are selected (e.g. "whole dish fed").
+  **List** shows all IDs as before.
+- **Filter**: tap the values you want. Several in one row = any of them, different rows = all must match.
+  The button shows how many IDs will be left. Active filters appear as chips; tap a chip to remove it.
+- **New ID**: ID, group, properties, origin, collecting date, assembling date. (Need mother/father? Add them as a property.)
   "How many?" > 1 creates a series: `F` + 12 → `F01 … F12`.
 - **Every ID starts alive.** Adding the status `death` marks it dead on that date.
 - **Hold an ID** (~half a second) → selection mode. Tap more IDs, or **All** (= all currently filtered IDs).
-  Then **+ Status** adds the same status to all of them, **Group** sets their group.
-- **ID page**: all details, links to parents and offspring, other projects of this ID, and the full status history.
+  Then **+ Status** adds the same status to all of them, **Set…** sets their group or a property.
+- **ID page**: all details, other projects of this ID, and the full status history.
   Tap an entry to edit or delete it.
-- **Properties** (colour mark, sex, …): lasting details that belong to the animal, the same in all its projects.
+- **Properties** (colour mark, sex, …): lasting details of an animal **in this project**. Every project has its own list and its own values.
   They appear on the ID page, in the ID list (and the search finds them), as filter "Property is", and as own columns in `…_ids.csv`.
   Change them via *Edit details* or for many IDs at once: hold → select → **Set…**. Every change is written into the history
   with its date (e.g. "colour mark: red-blue – changed from yellow"), so re-marking after a molt stays traceable.
-  Manage the list: project menu ⋮ → *Properties*, or a new one directly in *Edit details*.
+  Manage the list of this project: project menu ⋮ → *Properties*, or a new one directly in *Edit details*.
 - **Status types**: project menu ⋮ → *Status types*. They appear as quick buttons. Any new type you type is added automatically.
 
 ### IDs in several projects
-An ID is one real animal, shared by all projects. Use project menu ⋮ → *Add an existing ID*, or simply type an existing ID under *New ID*.
+An ID is one real animal. Use project menu ⋮ → *Add an existing ID*, or simply type an existing ID under *New ID*.
+A **preview** shows the properties of the ID in its latest other project (e.g. "colour mark: green", "sex: female");
+untick what should not be taken over, then *Add*. Properties the new project does not have yet are added to its list.
+Each taken-over value gets a history entry "taken over from <project>". After that the projects are **independent**.
+The status history stays in the old project (link "Also in" on the ID page).
 
 | Shared by all projects | Separate per project |
 |---|---|
-| ID code, properties, origin, mother, father, collecting date, death | group, assembling date, all status entries |
+| ID code, origin, collecting date, death | group, assembling date, **properties**, all status entries |
 
-The CSV export of a project contains only that project's entries.
+The CSV export of a project contains only that project's data.
 
 ### CSV export (per project)
 - `…_ids.csv` – one row per ID: base data plus, for every status type, the latest value, its date, and how often it was recorded (`molt_last_value`, `molt_last_date`, `molt_n`, …).
@@ -94,7 +107,8 @@ Separator comma or semicolon (for German Excel): Settings on the start screen.
 The data is stored **only in the browser on that one device** – not on GitHub, not in the cloud.
 It survives closing the app and restarting the phone, but it is gone if you *clear the browser data* or uninstall the browser.
 
-→ **Back up regularly**: Start screen ⋮ → *Back up everything* → share the `.json` to Google Drive.
+→ **Back up regularly**: Start screen ⋮ → *Back up everything* → choose Gmail or Google Drive in the share menu.
+On Chrome the backup is shared as `.txt` (Chrome does not share `.json` files) – the content is the same, *Restore* accepts both.
 The app reminds you if the last backup is older than 7 days. *Restore from backup* loads it again (also on a new phone).
 
 ---
@@ -102,9 +116,10 @@ The app reminds you if the last backup is older than 7 days. *Restore from backu
 ## 6. Changing / improving the app
 
 1. Change a file (on GitHub you can click a file → pencil icon ✏ → edit → *Commit changes*; or edit locally and upload again).
-2. In `sw.js` raise `const CACHE = 'moetervlog-v1'` to `'moetervlog-v2'` (then `v3` next time …).
-   Otherwise phones keep showing the old version.
-3. On the phone: close the app completely and open it again (sometimes twice).
+2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v11'` in `sw.js` → `v12`,
+   and `const APP_VERSION = 11` at the top of `app.js` → `12`.
+3. Wait 1–2 minutes, then open the app on the phone **with internet**, close it completely and open it again.
+   Check under ⋮ (Settings) on the start screen: the bottom line shows the running **app version**.
 
 Every commit is saved in the history (*Commits*), so you can always see and undo what changed.
 
