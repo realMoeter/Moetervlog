@@ -56,6 +56,7 @@ Done – the app now opens from the home screen, also in the lab without Wi-Fi.
 ## 4. How the app works
 
 - **Start screen** = your experiments (projects). ⋮ top right = settings & backup.
+  **Hold a project** to open its menu directly.
   Finished projects: project menu ⋮ → **Close project** (with date). They move to *Closed* at the bottom, greyed out.
   Nothing is locked – you can still open, edit and export them; **Reopen** moves them back.
 - **Project** opens in the **group view**: one tile per group (like the petri dishes on the shelf), one dot per ID –
@@ -73,6 +74,10 @@ Done – the app now opens from the home screen, also in the lab without Wi-Fi.
   Then **+ Status** adds the same status to all of them, **Set…** sets their group or a property.
 - **ID page**: all details, other projects of this ID, and the full status history.
   Tap an entry to edit or delete it.
+- **Going through many IDs** (e.g. weighing a whole dish): in *Add status* and *Edit details* a strip at the top shows
+  all IDs of the view you came from (opened group, filters, search). Tap an ID, use ‹ ›, or swipe left/right
+  (outside the input fields). What you typed is **saved automatically** before switching; status type, date and time
+  are kept for the next ID, so you only type the value. Dead IDs are shown faded but are included.
 - **Properties** (colour mark, sex, …): lasting details of an animal **in this project**. Every project has its own list and its own values.
   They appear on the ID page, in the ID list (and the search finds them), as filter "Property is", and as own columns in `…_ids.csv`.
   Change them via *Edit details* or for many IDs at once: hold → select → **Set…**. Every change is written into the history
@@ -116,8 +121,8 @@ The app reminds you if the last backup is older than 7 days. *Restore from backu
 ## 6. Changing / improving the app
 
 1. Change a file (on GitHub you can click a file → pencil icon ✏ → edit → *Commit changes*; or edit locally and upload again).
-2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v11'` in `sw.js` → `v12`,
-   and `const APP_VERSION = 11` at the top of `app.js` → `12`.
+2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v12'` in `sw.js` → `v13`,
+   and `const APP_VERSION = 12` at the top of `app.js` → `13`.
 3. Wait 1–2 minutes, then open the app on the phone **with internet**, close it completely and open it again.
    Check under ⋮ (Settings) on the start screen: the bottom line shows the running **app version**.
 

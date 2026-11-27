@@ -28,7 +28,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
-const APP_VERSION = 11;   // shown in Settings – raise together with the number in sw.js
+const APP_VERSION = 12;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -221,6 +221,7 @@ function modal({ title, body, okText = 'Save', danger = false, onOk, onOpen }) {
       <button type="button" class="btn ghost" data-cancel>${okText ? 'Cancel' : 'Close'}</button>
       ${okText ? `<button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(okText)}</button>` : ''}
     </div>`;
+  f.oninput = null; f.ontouchstart = null; f.ontouchend = null;   // reset handlers of the previous dialog
   f.onsubmit = e => {
     e.preventDefault();
     const r = onOk ? onOk(new FormData(f), f) : true;
@@ -292,7 +293,7 @@ function renderProjects() {
   const card = p => {
     const ms = membersOf(p.id);
     const alive = ms.filter(m => statusOf(animal(m.animalId)) === 'alive').length;
-    return `<li><a class="card ${p.closedAt ? 'closed' : ''}" href="#/p/${p.id}">
+    return `<li><a class="card ${p.closedAt ? 'closed' : ''}" href="#/p/${p.id}" data-pid="${p.id}">
       <span class="card-title">${esc(p.name)}</span>
       <span class="card-meta">${ms.length} IDs · ${alive} alive${p.closedAt ? ` · closed ${esc(p.closedAt)}` : ''}</span></a></li>`;
   };
@@ -310,6 +311,8 @@ function renderProjects() {
     <button class="fab" id="fab">${I.plus}<span>New project</span></button>`;
   $('#fab').onclick = newProjectDialog;
   if ($('#bkBtn')) $('#bkBtn').onclick = backupNow;
+  // tap = open the project (normal link) · hold = project menu
+  app().querySelectorAll('.card[data-pid]').forEach(el => onPress(el, () => {}, () => projectMenu(el.dataset.pid)));
 }
 
 /* ----- 3b. One project: group view ("petri dishes") or ID list ----- */
@@ -858,11 +861,28 @@ function addExistingDialog(pid) {
   });
 }
 
-function editAnimalDialog(pid, aid) {
+function editAnimalDialog(pid, aid, seq = null) {
   const a = animal(aid), mem = membership(pid, aid), m = mem || {};
+  if (mem && !seq) seq = stripIds(pid, aid);
+  const strip = mem && seq.length > 1;
+  let dirty = false;
+  const saveFrom = fd => {
+    a.origin = fd.get('origin').trim();
+    a.collectedOn = fd.get('collectedOn');
+    a.deathOn = fd.get('deathOn');
+    if (mem) {
+      const tDate = fd.get('traitDate') || todayStr();
+      readTraits(pid, fd).forEach(([t, v]) => setTrait(pid, aid, t, v, tDate));
+      const nt = fd.get('newTrait').trim();
+      if (nt) setTrait(pid, aid, addTrait(pid, nt), fd.get('newTraitValue'), tDate);
+      mem.group = fd.get('group').trim();
+      mem.assembledOn = fd.get('assembledOn');
+    }
+    touch(pid); cleanupOrphans(); save();
+  };
   modal({
     title: `Edit ${a.code}`,
-    body: `${idFields(pid, { group: m.group, traits: traitsOf(mem), noTraits: !mem, origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
+    body: `${strip ? stripHtml(seq, aid) : ''}${idFields(pid, { group: m.group, traits: traitsOf(mem), noTraits: !mem, origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
       ${mem ? `<fieldset><legend>Add a new property</legend>
         <div class="row2">
@@ -872,20 +892,14 @@ function editAnimalDialog(pid, aid) {
       </fieldset>
       <label>Date of property changes<input type="date" name="traitDate" value="${todayStr()}"></label>` : ''}
       <p class="hint">Group, assembling date and properties belong to this project. Origin, collecting date and death are shared by all projects of this ID. Property changes are written into this project's history.</p>`,
-    onOk: fd => {
-      a.origin = fd.get('origin').trim();
-      a.collectedOn = fd.get('collectedOn');
-      a.deathOn = fd.get('deathOn');
-      if (mem) {
-        const tDate = fd.get('traitDate') || todayStr();
-        readTraits(pid, fd).forEach(([t, v]) => setTrait(pid, aid, t, v, tDate));
-        const nt = fd.get('newTrait').trim();
-        if (nt) setTrait(pid, aid, addTrait(pid, nt), fd.get('newTraitValue'), tDate);
-        mem.group = fd.get('group').trim();
-        mem.assembledOn = fd.get('assembledOn');
-      }
-      touch(pid); cleanupOrphans(); save(); render(); toast('Saved');
+    onOpen: f => {
+      if (!strip) return;
+      f.oninput = e => { if (!e.target.closest('.idstrip')) dirty = true; };
+      wireStrip(f, pid, seq, aid,
+        () => { if (dirty) { saveFrom(new FormData(f)); toast(`Saved ${a.code}`); } },
+        next => editAnimalDialog(pid, next, seq));
     },
+    onOk: fd => { saveFrom(fd); render(); toast('Saved'); },
   });
 }
 
@@ -1016,7 +1030,7 @@ function statusFields(pid, d) {
   const p = project(pid);
   return `
     <div class="chips" id="quick">${p.features.map(f => `<button type="button" class="chip" data-f="${esc(f)}">${esc(f)}</button>`).join('')}</div>
-    <label>Status / feature <span class="req">*</span><input name="feature" required list="dl-features" autocomplete="off" value="${esc(d.feature || '')}" placeholder="e.g. molt"></label>
+    <label><span>Status / feature <span class="req">*</span></span><input name="feature" required list="dl-features" autocomplete="off" value="${esc(d.feature || '')}" placeholder="e.g. molt"></label>
     <label>Value<input name="value" list="dl-values" autocomplete="off" value="${esc(d.value || '')}" placeholder="e.g. yes · 23.4 · aggressive"></label>
     <div class="row2">
       <label>Date<input type="date" name="date" required value="${esc(d.date || todayStr())}"></label>
@@ -1036,20 +1050,97 @@ function wireStatusFields(pid, f) {
   update();
 }
 
-function addStatusDialog(pid, aids) {
-  const label = aids.length === 1 ? codeOf(aids[0]) : `${aids.length} IDs`;
+/* ----- Strip of IDs in the edit dialogs -----
+   When you add a status or edit the details of ONE ID, a strip at the top shows all IDs
+   of the view you came from (opened group, filters, search – same order as the list).
+   Tap an ID, use ‹ ›, or swipe left/right outside the input fields to go to the next ID.
+   Whatever you typed is saved automatically before switching. */
+let afterNav = null;   // dialog to open again once the next ID's page is shown
+
+/** The IDs of the current view, as a fixed list for one round of editing. */
+function stripIds(pid, aid) {
+  const ids = (ui.pid === pid ? visibleMembers(pid) : visibleMembers(pid, { ignoreFilters: true })).map(x => x.a.id);
+  return ids.includes(aid) ? ids : [aid, ...ids];
+}
+function stripHtml(seq, cur) {
+  return `<div class="idstrip">
+    <button type="button" class="strip-arrow" data-step="-1" aria-label="Previous ID">‹</button>
+    <div class="strip-scroll">${seq.map(id => {
+      const a = animal(id);
+      return a ? `<button type="button" class="strip-id ${id === cur ? 'cur' : ''} ${statusOf(a)}" data-go="${id}">${esc(a.code)}</button>` : '';
+    }).join('')}</div>
+    <button type="button" class="strip-arrow" data-step="1" aria-label="Next ID">›</button>
+  </div>`;
+}
+/**
+ * Wires the strip. leave() is called before switching: it saves if needed and returns
+ * false to stay (e.g. something required is missing). open(nextId) opens the dialog again.
+ */
+function wireStrip(f, pid, seq, cur, leave, open) {
+  const goTo = id => {
+    if (!id || id === cur) return;
+    if (leave() === false) return;
+    afterNav = () => open(id);
+    location.replace(`#/p/${pid}/a/${id}`);   // replace: the back button does not walk through every ID
+  };
+  const step = d => { const i = seq.indexOf(cur) + d; if (i >= 0 && i < seq.length) goTo(seq[i]); };
+  f.querySelectorAll('[data-go]').forEach(b => b.onclick = () => goTo(b.dataset.go));
+  f.querySelectorAll('[data-step]').forEach(b => {
+    const d = +b.dataset.step, i = seq.indexOf(cur) + d;
+    b.disabled = i < 0 || i >= seq.length;
+    b.onclick = () => step(d);
+  });
+  const curBtn = f.querySelector('.strip-id.cur');
+  if (curBtn) curBtn.scrollIntoView({ block: 'nearest', inline: 'center' });
+  // swipe (not inside input fields or the scrolling strip itself)
+  let x0 = null, y0 = 0;
+  f.ontouchstart = e => {
+    const t = e.target;
+    x0 = (t.closest('input, textarea, select, .strip-scroll')) ? null : e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+  };
+  f.ontouchend = e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
+    x0 = null;
+    if (Math.abs(dx) > 60 && Math.abs(dy) < 45) step(dx < 0 ? 1 : -1);
+  };
+}
+
+/** carry = status type, date and time taken over from the previous ID; seq = strip of IDs */
+function addStatusDialog(pid, aids, carry = {}, seq = null) {
+  const single = aids.length === 1;
+  if (single && !seq) seq = stripIds(pid, aids[0]);
+  const label = single ? codeOf(aids[0]) : `${aids.length} IDs`;
+  const read = fd => ({ feature: fd.get('feature').trim(), value: fd.get('value').trim(), date: fd.get('date'), time: fd.get('time'), note: fd.get('note').trim() });
+  const store = d => {
+    aids.forEach(aid => {
+      if (isDeathFeature(d.feature)) animal(aid).deathOn = d.date;
+      db.events.push(Object.assign({ id: uid(), projectId: pid, animalId: aid, createdAt: new Date().toISOString() }, d));
+    });
+    addFeature(project(pid), d.feature); touch(pid); save();
+  };
+  let dirty = false;   // did you type / choose something for THIS ID?
   modal({
     title: `Add status · ${label}`, okText: 'Save',
-    body: statusFields(pid, {}),
-    onOpen: f => wireStatusFields(pid, f),
+    body: (single && seq.length > 1 ? stripHtml(seq, aids[0]) : '') + statusFields(pid, carry),
+    onOpen: f => {
+      wireStatusFields(pid, f);
+      f.oninput = e => { if (!e.target.closest('.idstrip')) dirty = true; };
+      f.querySelectorAll('#quick [data-f]').forEach(b => b.addEventListener('click', () => { dirty = true; }));
+      if (single && seq.length > 1) wireStrip(f, pid, seq, aids[0],
+        () => {
+          const d = read(new FormData(f));
+          if (dirty) {
+            if (!d.feature || !d.date) { toast('Status or date missing – not saved'); return false; }
+            store(d); toast(`Saved for ${label}`);
+          }
+          carry = { feature: d.feature, date: d.date, time: d.time };
+        },
+        next => addStatusDialog(pid, [next], carry, seq));
+    },
     onOk: fd => {
-      const d = { feature: fd.get('feature').trim(), value: fd.get('value').trim(), date: fd.get('date'), time: fd.get('time'), note: fd.get('note').trim() };
-      const p = project(pid);
-      aids.forEach(aid => {
-        if (isDeathFeature(d.feature)) animal(aid).deathOn = d.date;
-        db.events.push(Object.assign({ id: uid(), projectId: pid, animalId: aid, createdAt: new Date().toISOString() }, d));
-      });
-      addFeature(p, d.feature); touch(pid); save();
+      store(read(fd));
       ui.selecting = false; ui.selected.clear(); render();
       toast(`Saved for ${label}`);
     },
@@ -1348,7 +1439,10 @@ function render() {
 }
 
 migrateData();   // one-time update of data from older versions (properties → per project)
-window.addEventListener('hashchange', () => { closeModal(); render(); });
+window.addEventListener('hashchange', () => {
+  closeModal(); render();
+  if (afterNav) { const f = afterNav; afterNav = null; f(); }   // next ID from the strip
+});
 render();
 
 // Ask the browser not to delete our data when space runs low
