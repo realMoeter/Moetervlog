@@ -114,15 +114,15 @@ It survives closing the app and restarting the phone, but it is gone if you *cle
 
 → **Back up regularly**: Start screen ⋮ → *Back up everything* → choose Gmail or Google Drive in the share menu.
 On Chrome the backup is shared as `.txt` (Chrome does not share `.json` files) – the content is the same, *Restore* accepts both.
-The app reminds you if the last backup is older than 7 days. *Restore from backup* loads it again (also on a new phone).
+The app reminds you when the last backup is 5 days old or more. *Restore from backup* loads it again (also on a new phone).
 
 ---
 
 ## 6. Changing / improving the app
 
 1. Change a file (on GitHub you can click a file → pencil icon ✏ → edit → *Commit changes*; or edit locally and upload again).
-2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v14'` in `sw.js` → `v15`,
-   and `const APP_VERSION = 14` at the top of `app.js` → `15`.
+2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v15'` in `sw.js` → `v16`,
+   and `const APP_VERSION = 15` at the top of `app.js` → `16`.
 3. Wait 1–2 minutes, then open the app on the phone **with internet**, close it completely and open it again.
    Check under ⋮ (Settings) on the start screen: the bottom line shows the running **app version**.
 

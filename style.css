@@ -285,25 +285,42 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* ============ Strip of IDs above the edit window ============ */
 #dlgStrip { width: 100%; display: flex; align-items: center; gap: 4px; padding: 0 6px; flex: none; }
 #dlgStrip:empty { display: none; }
-.strip-scroll { flex: 1; display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding: 12px 8px 18px; margin-bottom: -8px; }
+.strip-scroll {
+  position: relative;   /* so the current tile can be centred exactly */
+  flex: 1; display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
+  padding: 14px calc(50% - 38px) 20px; margin-bottom: -8px;   /* side padding: first/last tile can be centred too */
+}
 .strip-scroll::-webkit-scrollbar { display: none; }
 .strip-id {   /* small versions of the window: rounded rectangles in light green */
-  flex: none; min-width: 62px; padding: 12px 10px; cursor: pointer;
+  flex: none; min-width: 62px; padding: 11px 9px; cursor: pointer;
   font: inherit; font-size: .92rem; font-weight: 700; font-family: ui-monospace, monospace;
   background: var(--accent-soft); color: var(--ink);
-  border: 2px solid transparent; border-radius: 12px;
+  border: 3px solid transparent; border-radius: 12px;
   box-shadow: 0 3px 8px rgba(0,0,0,.2); transition: transform .15s;
 }
-.strip-id.dead { opacity: .45; }
-.strip-id.cur { border-color: var(--accent); transform: scale(1.14); opacity: 1; }
+.strip-id.cur { border-color: var(--accent); transform: scale(1.2); }
+/* dead: light, see-through red – also when highlighted (then with a red frame) */
+.strip-id.dead { background: color-mix(in srgb, var(--dead) 26%, transparent); color: var(--dead); box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+.strip-id.dead.cur { border-color: var(--dead); }
 .strip-arrow {
   flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0;
   background: var(--card); color: var(--ink); font-size: 1.5rem; line-height: 1; cursor: pointer;
   box-shadow: 0 4px 14px rgba(0,0,0,.22);
 }
-.strip-arrow:disabled { opacity: .35; cursor: default; }
+.strip-arrow:disabled { color: color-mix(in srgb, var(--ink) 25%, var(--card)); cursor: default; }   /* greyed out, but not see-through */
 /* window slides in from the side when you go to the next / previous ID */
 @keyframes slideFromRight { from { transform: translateX(46px); opacity: .25; } to { transform: none; opacity: 1; } }
 @keyframes slideFromLeft { from { transform: translateX(-46px); opacity: .25; } to { transform: none; opacity: 1; } }
 #dlgForm.slide-next { animation: slideFromRight .2s ease-out; }
 #dlgForm.slide-prev { animation: slideFromLeft .2s ease-out; }
+
+/* ============ Lower-case labels ============
+   All labels of the app are written in lower case. Your own data (IDs, project names,
+   values) keeps its spelling: input fields and bold text are excluded. */
+label, legend, .btn, .fab, .seg button, .menu-item, .eyebrow, h3, .fsec-t, .facts dt,
+.summary, .card-meta, .dish-count, .legend, .hint, .empty, .notice, .banner, .dlg-body > p, .pill {
+  text-transform: lowercase;
+}
+input, select, textarea, option, b, strong { text-transform: none; }
+input::placeholder, textarea::placeholder { text-transform: lowercase; }
+#toast::first-letter { text-transform: lowercase; }
