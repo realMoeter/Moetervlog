@@ -121,8 +121,8 @@ The app reminds you if the last backup is older than 7 days. *Restore from backu
 ## 6. Changing / improving the app
 
 1. Change a file (on GitHub you can click a file → pencil icon ✏ → edit → *Commit changes*; or edit locally and upload again).
-2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v13'` in `sw.js` → `v14`,
-   and `const APP_VERSION = 13` at the top of `app.js` → `14`.
+2. Raise the version number in **two** places: `const CACHE = 'moetervlog-v14'` in `sw.js` → `v15`,
+   and `const APP_VERSION = 14` at the top of `app.js` → `15`.
 3. Wait 1–2 minutes, then open the app on the phone **with internet**, close it completely and open it again.
    Check under ⋮ (Settings) on the start screen: the bottom line shows the running **app version**.
 

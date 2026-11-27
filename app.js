@@ -28,7 +28,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
-const APP_VERSION = 13;   // shown in Settings – raise together with the number in sw.js
+const APP_VERSION = 14;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -212,6 +212,18 @@ function toast(msg) {
  *   onOk(formData, form) : called when the main button is pressed; return false to keep it open
  *   onOpen(form)         : called right after opening (to attach extra events)
  */
+/** The place for the strip of IDs above the window. Created here if index.html is older
+    and does not have it yet – so an update never breaks the dialogs. */
+function stripBox() {
+  let box = $('#dlgStrip');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'dlgStrip';
+    $('#dlg').insertBefore(box, $('#dlgForm'));
+  }
+  return box;
+}
+
 function modal({ title, body, okText = 'Save', danger = false, onOk, onOpen }) {
   const dlg = $('#dlg'), f = $('#dlgForm');
   f.innerHTML = `
@@ -222,7 +234,7 @@ function modal({ title, body, okText = 'Save', danger = false, onOk, onOpen }) {
       ${okText ? `<button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(okText)}</button>` : ''}
     </div>`;
   // reset what the previous dialog left behind (strip, handlers, slide animation)
-  $('#dlgStrip').innerHTML = '';
+  stripBox().innerHTML = '';
   f.oninput = null; dlg.ontouchstart = null; dlg.ontouchend = null;
   f.classList.remove('slide-next', 'slide-prev');
   f.onsubmit = e => {
@@ -1081,7 +1093,7 @@ function stripHtml(seq, cur) {
  * open(nextId) opens the dialog again for the next ID.
  */
 function wireStrip(f, pid, seq, cur, leave, open) {
-  const box = $('#dlgStrip'), dlg = $('#dlg');
+  const box = stripBox(), dlg = $('#dlg');
   box.innerHTML = stripHtml(seq, cur);
   const sc = box.querySelector('.strip-scroll');
   const goTo = (id, dir) => {
