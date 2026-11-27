@@ -170,13 +170,20 @@ svg.i { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-widt
 .tl-note { color: var(--muted); font-size: .9rem; margin-top: 2px; }
 
 /* ============ Dialogs & forms ============ */
+/* The <dialog> itself is an invisible full-screen layer; the visible window is the <form>.
+   That way the strip of IDs can sit above the window, using the full phone width. */
 dialog {
-  border: 0; border-radius: 20px; padding: 0; width: min(560px, calc(100vw - 20px));
-  max-height: calc(100dvh - 30px); background: var(--card); color: var(--ink);
-  box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  border: 0; padding: 0; margin: 0; background: transparent; color: var(--ink); box-shadow: none;
+  width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; overflow: hidden;
 }
+dialog[open] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
 dialog::backdrop { background: rgba(10, 15, 12, .5); }
-dialog form { padding: 18px; display: flex; flex-direction: column; max-height: calc(100dvh - 30px); }
+dialog form {
+  padding: 18px; display: flex; flex-direction: column; max-height: calc(100dvh - 30px);
+  width: min(560px, calc(100vw - 20px)); background: var(--card); color: var(--ink);
+  border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,.35);
+}
+#dlgStrip:not(:empty) ~ form { max-height: calc(100dvh - 130px); }
 dialog h2 { margin: 0 0 12px; font-size: 1.2rem; }
 .dlg-body { overflow-y: auto; flex: 1; display: grid; gap: 12px; padding: 2px; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
@@ -275,24 +282,28 @@ input[type="checkbox"] { accent-color: var(--accent); }
 /* ============ Long press on project cards ============ */
 .card { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 
-/* ============ Strip of IDs in edit dialogs ============ */
-.idstrip {
-  position: sticky; top: 0; z-index: 2; background: var(--card);
-  display: flex; align-items: center; gap: 4px; margin: -2px 0 2px; padding-bottom: 8px;
-  border-bottom: 1px solid var(--line);
-}
-.strip-scroll { flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 2px; scroll-behavior: smooth; }
+/* ============ Strip of IDs above the edit window ============ */
+#dlgStrip { width: 100%; display: flex; align-items: center; gap: 4px; padding: 0 6px; flex: none; }
+#dlgStrip:empty { display: none; }
+.strip-scroll { flex: 1; display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding: 12px 8px 18px; margin-bottom: -8px; }
 .strip-scroll::-webkit-scrollbar { display: none; }
-.strip-id {
-  flex: none; font: inherit; font-size: .9rem; font-weight: 650; font-family: ui-monospace, monospace;
-  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
-  border-radius: 999px; padding: 6px 11px; cursor: pointer;
+.strip-id {   /* small versions of the window: rounded rectangles in light green */
+  flex: none; min-width: 62px; padding: 12px 10px; cursor: pointer;
+  font: inherit; font-size: .92rem; font-weight: 700; font-family: ui-monospace, monospace;
+  background: var(--accent-soft); color: var(--ink);
+  border: 2px solid transparent; border-radius: 12px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.2); transition: transform .15s;
 }
 .strip-id.dead { opacity: .45; }
-.strip-id.cur { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); opacity: 1; }
-.strip-id.cur.dead { background: color-mix(in srgb, var(--accent) 55%, var(--bg)); }
+.strip-id.cur { border-color: var(--accent); transform: scale(1.14); opacity: 1; }
 .strip-arrow {
-  flex: none; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line);
-  background: var(--card); color: var(--ink); font-size: 1.3rem; line-height: 1; cursor: pointer;
+  flex: none; width: 40px; height: 40px; border-radius: 50%; border: 0;
+  background: var(--card); color: var(--ink); font-size: 1.5rem; line-height: 1; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,.22);
 }
-.strip-arrow:disabled { opacity: .3; cursor: default; }
+.strip-arrow:disabled { opacity: .35; cursor: default; }
+/* window slides in from the side when you go to the next / previous ID */
+@keyframes slideFromRight { from { transform: translateX(46px); opacity: .25; } to { transform: none; opacity: 1; } }
+@keyframes slideFromLeft { from { transform: translateX(-46px); opacity: .25; } to { transform: none; opacity: 1; } }
+#dlgForm.slide-next { animation: slideFromRight .2s ease-out; }
+#dlgForm.slide-prev { animation: slideFromLeft .2s ease-out; }

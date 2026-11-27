@@ -8,7 +8,7 @@
    Still raise the version number below after every change (v8 → v9 …),
    and also APP_VERSION at the top of app.js – then you can see in
    Settings which version your phone is running. */
-const CACHE = 'moetervlog-v12';
+const CACHE = 'moetervlog-v13';
 const FILES = ['./', './index.html', './style.css', './app.js', './manifest.json',
   './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable.png'];
 

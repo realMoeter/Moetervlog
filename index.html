@@ -16,8 +16,8 @@
   <header id="topbar"></header>
   <main id="app"></main>
 
-  <!-- One reusable pop-up window for all dialogs -->
-  <dialog id="dlg"><form id="dlgForm" method="dialog"></form></dialog>
+  <!-- One reusable pop-up window for all dialogs (+ the strip of IDs above it) -->
+  <dialog id="dlg"><div id="dlgStrip"></div><form id="dlgForm" method="dialog"></form></dialog>
 
   <!-- Short messages at the bottom ("Saved", "Exported" …) -->
   <div id="toast" role="status" aria-live="polite"></div>

@@ -28,7 +28,7 @@
 // ---------------------------------------------------------------------
 // 1. DATA
 // ---------------------------------------------------------------------
-const APP_VERSION = 12;   // shown in Settings – raise together with the number in sw.js
+const APP_VERSION = 13;   // shown in Settings – raise together with the number in sw.js
 const STORE_KEY = 'moetervlog-data-v1';
 const SETTINGS_KEY = 'moetervlog-settings-v1';
 const DEFAULT_FEATURES = ['weight', 'molt', 'egg sac', 'feeding', 'behaviour', 'death'];
@@ -221,7 +221,10 @@ function modal({ title, body, okText = 'Save', danger = false, onOk, onOpen }) {
       <button type="button" class="btn ghost" data-cancel>${okText ? 'Cancel' : 'Close'}</button>
       ${okText ? `<button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(okText)}</button>` : ''}
     </div>`;
-  f.oninput = null; f.ontouchstart = null; f.ontouchend = null;   // reset handlers of the previous dialog
+  // reset what the previous dialog left behind (strip, handlers, slide animation)
+  $('#dlgStrip').innerHTML = '';
+  f.oninput = null; dlg.ontouchstart = null; dlg.ontouchend = null;
+  f.classList.remove('slide-next', 'slide-prev');
   f.onsubmit = e => {
     e.preventDefault();
     const r = onOk ? onOk(new FormData(f), f) : true;
@@ -882,7 +885,7 @@ function editAnimalDialog(pid, aid, seq = null) {
   };
   modal({
     title: `Edit ${a.code}`,
-    body: `${strip ? stripHtml(seq, aid) : ''}${idFields(pid, { group: m.group, traits: traitsOf(mem), noTraits: !mem, origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
+    body: `${idFields(pid, { group: m.group, traits: traitsOf(mem), noTraits: !mem, origin: a.origin, collectedOn: a.collectedOn, assembledOn: m.assembledOn })}
       <label>Death date (empty = alive)<input type="date" name="deathOn" value="${esc(a.deathOn || '')}"></label>
       ${mem ? `<fieldset><legend>Add a new property</legend>
         <div class="row2">
@@ -894,7 +897,7 @@ function editAnimalDialog(pid, aid, seq = null) {
       <p class="hint">Group, assembling date and properties belong to this project. Origin, collecting date and death are shared by all projects of this ID. Property changes are written into this project's history.</p>`,
     onOpen: f => {
       if (!strip) return;
-      f.oninput = e => { if (!e.target.closest('.idstrip')) dirty = true; };
+      f.oninput = () => { dirty = true; };
       wireStrip(f, pid, seq, aid,
         () => { if (dirty) { saveFrom(new FormData(f)); toast(`Saved ${a.code}`); } },
         next => editAnimalDialog(pid, next, seq));
@@ -1055,7 +1058,8 @@ function wireStatusFields(pid, f) {
    of the view you came from (opened group, filters, search – same order as the list).
    Tap an ID, use ‹ ›, or swipe left/right outside the input fields to go to the next ID.
    Whatever you typed is saved automatically before switching. */
-let afterNav = null;   // dialog to open again once the next ID's page is shown
+let afterNav = null;     // dialog to open again once the next ID's page is shown
+let stripNav = null;     // { dir: 1 | -1, scroll } while switching – for the animation and to keep the strip's position
 
 /** The IDs of the current view, as a fixed list for one round of editing. */
 function stripIds(pid, aid) {
@@ -1063,47 +1067,59 @@ function stripIds(pid, aid) {
   return ids.includes(aid) ? ids : [aid, ...ids];
 }
 function stripHtml(seq, cur) {
-  return `<div class="idstrip">
+  return `
     <button type="button" class="strip-arrow" data-step="-1" aria-label="Previous ID">‹</button>
     <div class="strip-scroll">${seq.map(id => {
       const a = animal(id);
       return a ? `<button type="button" class="strip-id ${id === cur ? 'cur' : ''} ${statusOf(a)}" data-go="${id}">${esc(a.code)}</button>` : '';
     }).join('')}</div>
-    <button type="button" class="strip-arrow" data-step="1" aria-label="Next ID">›</button>
-  </div>`;
+    <button type="button" class="strip-arrow" data-step="1" aria-label="Next ID">›</button>`;
 }
 /**
- * Wires the strip. leave() is called before switching: it saves if needed and returns
- * false to stay (e.g. something required is missing). open(nextId) opens the dialog again.
+ * Shows the strip above the window and wires it. leave() is called before switching:
+ * it saves if needed and returns false to stay (e.g. something required is missing).
+ * open(nextId) opens the dialog again for the next ID.
  */
 function wireStrip(f, pid, seq, cur, leave, open) {
-  const goTo = id => {
+  const box = $('#dlgStrip'), dlg = $('#dlg');
+  box.innerHTML = stripHtml(seq, cur);
+  const sc = box.querySelector('.strip-scroll');
+  const goTo = (id, dir) => {
     if (!id || id === cur) return;
     if (leave() === false) return;
+    stripNav = { dir: dir || (seq.indexOf(id) > seq.indexOf(cur) ? 1 : -1), scroll: sc.scrollLeft };
     afterNav = () => open(id);
     location.replace(`#/p/${pid}/a/${id}`);   // replace: the back button does not walk through every ID
   };
-  const step = d => { const i = seq.indexOf(cur) + d; if (i >= 0 && i < seq.length) goTo(seq[i]); };
-  f.querySelectorAll('[data-go]').forEach(b => b.onclick = () => goTo(b.dataset.go));
-  f.querySelectorAll('[data-step]').forEach(b => {
+  const step = d => { const i = seq.indexOf(cur) + d; if (i >= 0 && i < seq.length) goTo(seq[i], d); };
+  box.querySelectorAll('[data-go]').forEach(b => b.onclick = () => goTo(b.dataset.go));
+  box.querySelectorAll('[data-step]').forEach(b => {
     const d = +b.dataset.step, i = seq.indexOf(cur) + d;
     b.disabled = i < 0 || i >= seq.length;
     b.onclick = () => step(d);
   });
-  const curBtn = f.querySelector('.strip-id.cur');
-  if (curBtn) curBtn.scrollIntoView({ block: 'nearest', inline: 'center' });
-  // swipe (not inside input fields or the scrolling strip itself)
+
+  // keep the strip where it was and glide to the current ID (instead of jumping back to the start)
+  const curBtn = box.querySelector('.strip-id.cur');
+  const target = curBtn ? curBtn.offsetLeft - (sc.clientWidth - curBtn.offsetWidth) / 2 : 0;
+  if (stripNav) {
+    sc.scrollLeft = stripNav.scroll;
+    requestAnimationFrame(() => sc.scrollTo({ left: target, behavior: 'smooth' }));
+    f.classList.add(stripNav.dir > 0 ? 'slide-next' : 'slide-prev');
+    stripNav = null;
+  } else sc.scrollLeft = target;
+
+  // swipe left / right anywhere on the window or the free space (not on the strip itself, which scrolls)
   let x0 = null, y0 = 0;
-  f.ontouchstart = e => {
-    const t = e.target;
-    x0 = (t.closest('input, textarea, select, .strip-scroll')) ? null : e.touches[0].clientX;
+  dlg.ontouchstart = e => {
+    x0 = e.target.closest('.strip-scroll, select') ? null : e.touches[0].clientX;
     y0 = e.touches[0].clientY;
   };
-  f.ontouchend = e => {
+  dlg.ontouchend = e => {
     if (x0 === null) return;
     const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
     x0 = null;
-    if (Math.abs(dx) > 60 && Math.abs(dy) < 45) step(dx < 0 ? 1 : -1);
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
   };
 }
 
@@ -1123,10 +1139,10 @@ function addStatusDialog(pid, aids, carry = {}, seq = null) {
   let dirty = false;   // did you type / choose something for THIS ID?
   modal({
     title: `Add status · ${label}`, okText: 'Save',
-    body: (single && seq.length > 1 ? stripHtml(seq, aids[0]) : '') + statusFields(pid, carry),
+    body: statusFields(pid, carry),
     onOpen: f => {
       wireStatusFields(pid, f);
-      f.oninput = e => { if (!e.target.closest('.idstrip')) dirty = true; };
+      f.oninput = () => { dirty = true; };
       f.querySelectorAll('#quick [data-f]').forEach(b => b.addEventListener('click', () => { dirty = true; }));
       if (single && seq.length > 1) wireStrip(f, pid, seq, aids[0],
         () => {
